@@ -50,6 +50,20 @@ git checkout main && git merge upstream
 
 Diff any two releases with their tags: `git diff upstream-0.3.150 upstream-0.3.151`.
 
+## Before committing any change
+
+Always review the full delta of your branch (committed history **plus**
+uncommitted working-tree changes) against pristine upstream, and confirm it is
+minimal, surgical, and correct — no incidental edits to vendored bundles, no
+stray files:
+
+```bash
+git diff upstream            # everything on this branch + working tree vs. upstream
+git diff --stat upstream     # quick file-level overview
+```
+
+Only commit once that diff is exactly the intended patch and nothing more.
+
 ## Local patches
 
 Make changes on `main` (one focused commit each, so merges stay easy).
