@@ -3,6 +3,9 @@
   "version": "0.3.150",
   "main": "sdk.mjs",
   "types": "sdk.d.ts",
+  "scripts": {
+    "update-upstream": "set -e; PKG=@anthropic-ai/claude-agent-sdk; if ! git diff --quiet || ! git diff --cached --quiet; then echo 'ERROR: commit or stash changes first'; exit 1; fi; V=$(npm view $PKG version); B=$(git rev-parse --abbrev-ref HEAD); D=$(mktemp -d); ( cd \"$D\" && npm pack $PKG >/dev/null ); tar -xzf \"$D\"/*.tgz -C \"$D\"; git checkout -q upstream; rsync -a --delete --exclude=.git \"$D/package/\" ./; git add -A; if git diff --cached --quiet; then echo \"upstream already at $V\"; else git commit -q -m \"vendor: $PKG@$V\"; git tag -f upstream-$V; echo \"vendored $V on upstream\"; fi; git checkout -q \"$B\"; rm -rf \"$D\"; echo 'Done -- now run: git merge upstream'"
+  },
   "exports": {
     ".": {
       "types": "./sdk.d.ts",
