@@ -124,10 +124,35 @@ Intentionally **not** touched, so don't add them back as "missing":
   and the `SDKUserMessage` envelope are the actual control protocol — removing
   them breaks the SDK. They are not addressable here by design.
 
+**Re-applying after `git merge upstream`.** Conflicts in `sdk.mjs` /
+`assistant.mjs` will usually span entire minified mega-lines (a single line
+can be tens of thousands of chars), so the cleanest path is to discard the
+conflicted versions, take pristine upstream wholesale, and re-apply the four
+sites by hand:
+
+```bash
+git checkout --theirs sdk.mjs assistant.mjs
+```
+
+Then apply each rewrite via `perl -i -pe` (or `sed`) through `Bash` — **not**
+the `Edit` tool. On at least some setups a `PostToolUse:Edit` hook auto-formats
+`.mjs` files, which expands the bundled code from ~200 lines to >100k lines and
+obliterates the diff against upstream. Locate the sites first
+(`grep -on 'CLAUDE_CODE_ENTRYPOINT="sdk-ts"' sdk.mjs assistant.mjs` — expect 2
+per file), then craft the substitution against the surrounding bytes (the
+env-var identifier — `H`, `V6`, `G`, `NQ`, … — is different each release). For
+example, a streaming-path site in `sdk.mjs`:
+
+```bash
+perl -i -pe 's|if\(!H\.CLAUDE_CODE_ENTRYPOINT\)H\.CLAUDE_CODE_ENTRYPOINT="sdk-ts";if\(delete H\.NODE_OPTIONS,|if(!H.CLAUDE_CODE_ENTRYPOINT)H.CLAUDE_CODE_ENTRYPOINT="cli";delete H.CLAUDE_AGENT_SDK_VERSION;if(delete H.NODE_OPTIONS,|g' sdk.mjs
+```
+
 Verify after re-applying: `node --check sdk.mjs && node --check assistant.mjs`,
 then confirm no `CLAUDE_CODE_ENTRYPOINT="sdk-ts"` assignments remain (the
 `case"sdk-ts"` in the telemetry switch should stay) and that there are two
-`delete …CLAUDE_AGENT_SDK_VERSION` sites per file.
+`delete …CLAUDE_AGENT_SDK_VERSION` sites per file. The final
+`git diff --stat upstream` should show only `sdk.mjs` (4 lines), `assistant.mjs`
+(4 lines), `package.json` (~3 lines), and `CLAUDE.md` — nothing else.
 
 The package name is left as `@anthropic-ai/claude-agent-sdk` so the fork is a
 drop-in replacement. Note `optionalDependencies` pin the native
