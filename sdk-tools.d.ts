@@ -2274,7 +2274,15 @@ export interface WorkflowInput {
    */
   name?: string;
   /**
-   * Optional input value exposed to the script as the global `args`. Use for parameterized named workflows (e.g. a research question).
+   * Ignored — set the workflow description in the script's `meta` block.
+   */
+  description?: string;
+  /**
+   * Ignored — set the workflow title in the script's `meta` block.
+   */
+  title?: string;
+  /**
+   * Optional input value exposed to the script as the global `args`, verbatim. Pass arrays/objects as actual JSON values, NOT as a JSON-encoded string — a stringified list breaks `args.filter`/`args.map` in the script. Use for parameterized named workflows (e.g. a research question).
    */
   args?: {
     [k: string]: unknown;
@@ -2450,6 +2458,36 @@ export interface BashOutput {
    * Model-facing system-reminder appended when a gh command reports a GitHub API rate-limit error
    */
   ghRateLimitHint?: string;
+  /**
+   * @internal Structured classification of git/gh operations detected in this command (commit/push/merge/rebase/PR). Client-facing — lets clients render git activity without re-parsing stdout; not surfaced to the model.
+   */
+  gitOperation?: {
+    commit?: {
+      sha: string;
+      kind: "committed" | "amended" | "cherry-picked";
+    };
+    push?: {
+      branch: string;
+    };
+    branch?: {
+      ref: string;
+      action: "merged" | "rebased";
+    };
+    pr?: {
+      number: number;
+      url?: string;
+      action:
+        | "created"
+        | "edited"
+        | "merged"
+        | "commented"
+        | "closed"
+        | "ready"
+        | "draft"
+        | "auto-merge-enabled"
+        | "auto-merge-disabled";
+    };
+  };
 }
 export interface ExitPlanModeOutput {
   /**

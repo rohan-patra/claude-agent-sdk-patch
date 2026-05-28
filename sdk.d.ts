@@ -350,6 +350,8 @@ declare namespace coreTypes {
         McpServerToolPolicy,
         McpSetServersResult,
         McpStdioServerConfig,
+        MessageDisplayHookInput,
+        MessageDisplayHookSpecificOutput,
         ModelInfo,
         ModelUsage,
         NotificationHookInput,
@@ -416,6 +418,7 @@ declare namespace coreTypes {
         SDKTaskProgressMessage,
         SDKTaskStartedMessage,
         SDKTaskUpdatedMessage,
+        SDKThinkingTokensMessage,
         SDKToolProgressMessage,
         SDKToolUseSummaryMessage,
         SDKUserMessageReplay,
@@ -516,7 +519,7 @@ export declare function deleteSession(_sessionId: string, _options?: SessionMuta
  * - `'low'` — Minimal thinking, fastest responses
  * - `'medium'` — Moderate thinking
  * - `'high'` — Deep reasoning (default)
- * - `'xhigh'` — Deeper than high (Opus 4.7 only; falls back to `'high'` elsewhere)
+ * - `'xhigh'` — Deeper than high (Opus 4.7+; falls back to `'high'` elsewhere)
  * - `'max'` — Maximum effort (select models only)
  */
 export declare type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -777,7 +780,7 @@ export declare type GetSubagentMessagesOptions = {
     sessionStore?: SessionStore;
 };
 
-export declare const HOOK_EVENTS: readonly ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "Notification", "UserPromptSubmit", "UserPromptExpansion", "SessionStart", "SessionEnd", "Stop", "StopFailure", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "PermissionRequest", "PermissionDenied", "Setup", "TeammateIdle", "TaskCreated", "TaskCompleted", "Elicitation", "ElicitationResult", "ConfigChange", "WorktreeCreate", "WorktreeRemove", "InstructionsLoaded", "CwdChanged", "FileChanged"];
+export declare const HOOK_EVENTS: readonly ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "Notification", "UserPromptSubmit", "UserPromptExpansion", "SessionStart", "SessionEnd", "Stop", "StopFailure", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "PermissionRequest", "PermissionDenied", "Setup", "TeammateIdle", "TaskCreated", "TaskCompleted", "Elicitation", "ElicitationResult", "ConfigChange", "WorktreeCreate", "WorktreeRemove", "InstructionsLoaded", "CwdChanged", "FileChanged", "MessageDisplay"];
 
 /**
  * Hook callback function for responding to events during execution.
@@ -796,9 +799,9 @@ export declare interface HookCallbackMatcher {
     timeout?: number;
 }
 
-export declare type HookEvent = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PostToolBatch' | 'Notification' | 'UserPromptSubmit' | 'UserPromptExpansion' | 'SessionStart' | 'SessionEnd' | 'Stop' | 'StopFailure' | 'SubagentStart' | 'SubagentStop' | 'PreCompact' | 'PostCompact' | 'PermissionRequest' | 'PermissionDenied' | 'Setup' | 'TeammateIdle' | 'TaskCreated' | 'TaskCompleted' | 'Elicitation' | 'ElicitationResult' | 'ConfigChange' | 'WorktreeCreate' | 'WorktreeRemove' | 'InstructionsLoaded' | 'CwdChanged' | 'FileChanged';
+export declare type HookEvent = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PostToolBatch' | 'Notification' | 'UserPromptSubmit' | 'UserPromptExpansion' | 'SessionStart' | 'SessionEnd' | 'Stop' | 'StopFailure' | 'SubagentStart' | 'SubagentStop' | 'PreCompact' | 'PostCompact' | 'PermissionRequest' | 'PermissionDenied' | 'Setup' | 'TeammateIdle' | 'TaskCreated' | 'TaskCompleted' | 'Elicitation' | 'ElicitationResult' | 'ConfigChange' | 'WorktreeCreate' | 'WorktreeRemove' | 'InstructionsLoaded' | 'CwdChanged' | 'FileChanged' | 'MessageDisplay';
 
-export declare type HookInput = PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput | PostToolBatchHookInput | PermissionDeniedHookInput | NotificationHookInput | UserPromptSubmitHookInput | UserPromptExpansionHookInput | SessionStartHookInput | SessionEndHookInput | StopHookInput | StopFailureHookInput | SubagentStartHookInput | SubagentStopHookInput | PreCompactHookInput | PostCompactHookInput | PermissionRequestHookInput | SetupHookInput | TeammateIdleHookInput | TaskCreatedHookInput | TaskCompletedHookInput | ElicitationHookInput | ElicitationResultHookInput | ConfigChangeHookInput | InstructionsLoadedHookInput | WorktreeCreateHookInput | WorktreeRemoveHookInput | CwdChangedHookInput | FileChangedHookInput;
+export declare type HookInput = PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput | PostToolBatchHookInput | PermissionDeniedHookInput | NotificationHookInput | UserPromptSubmitHookInput | UserPromptExpansionHookInput | SessionStartHookInput | SessionEndHookInput | StopHookInput | StopFailureHookInput | SubagentStartHookInput | SubagentStopHookInput | PreCompactHookInput | PostCompactHookInput | PermissionRequestHookInput | SetupHookInput | TeammateIdleHookInput | TaskCreatedHookInput | TaskCompletedHookInput | ElicitationHookInput | ElicitationResultHookInput | ConfigChangeHookInput | InstructionsLoadedHookInput | WorktreeCreateHookInput | WorktreeRemoveHookInput | CwdChangedHookInput | FileChangedHookInput | MessageDisplayHookInput;
 
 export declare type HookJSONOutput = AsyncHookJSONOutput | SyncHookJSONOutput;
 
@@ -1134,6 +1137,44 @@ export declare type McpStdioServerConfig = {
      */
     alwaysLoad?: boolean;
 
+};
+
+/**
+ * Hook input for the MessageDisplay event. Fired with each batch of newly completed lines while an assistant message streams. Display-only: the stored message and what the model sees are untouched.
+ */
+export declare type MessageDisplayHookInput = BaseHookInput & {
+    hook_event_name: 'MessageDisplay';
+    /**
+     * UUID of the current turn.
+     */
+    turn_id: string;
+    /**
+     * UUID of the assistant message being displayed. Stable across every flush of the same message. Not the API msg_… id.
+     */
+    message_id: string;
+    /**
+     * Zero-based index of this delta within the message. Increments by one per flush.
+     */
+    index: number;
+    /**
+     * True on the message's last flush. Exactly one flush per message has it.
+     */
+    final: boolean;
+    /**
+     * The newly completed lines since the prior flush. Always whole lines, except on the final flush which may end mid-line. The delta of the final flush is empty when the message ends on a newline; treat final as the end-of-message signal regardless.
+     */
+    delta: string;
+};
+
+/**
+ * Hook-specific output for the MessageDisplay event. Display-only: replaces the delta on screen without changing the stored message.
+ */
+export declare type MessageDisplayHookSpecificOutput = {
+    hookEventName: 'MessageDisplay';
+    /**
+     * Text displayed in place of the delta. Omit (or return the delta unchanged) to display the original.
+     */
+    displayContent?: string;
 };
 
 /**
@@ -1508,8 +1549,8 @@ export declare type Options = {
      * - `'low'` — Minimal thinking, fastest responses
      * - `'medium'` — Moderate thinking
      * - `'high'` — Deep reasoning (default)
-     * - `'xhigh'` — Deeper than high (Opus 4.7 only)
-     * - `'max'` — Maximum effort (Opus 4.6/4.7, Sonnet 4.6)
+     * - `'xhigh'` — Deeper than high (Opus 4.7+)
+     * - `'max'` — Maximum effort (Opus 4.6+, Sonnet 4.6)
      *
      * @see https://docs.anthropic.com/en/docs/build-with-claude/effort
      */
@@ -1560,7 +1601,7 @@ export declare type Options = {
     mcpServers?: Record<string, McpServerConfig>;
     /**
      * Claude model to use. Defaults to the CLI default model.
-     * Examples: 'claude-sonnet-4-6', 'claude-opus-4-7'
+     * Examples: 'claude-sonnet-4-6', 'claude-opus-4-8'
      */
     model?: string;
     /**
@@ -1801,8 +1842,11 @@ export declare type Options = {
      */
     stderr?: (data: string) => void;
     /**
-     * Enforce strict validation of MCP server configurations.
-     * When true, invalid configurations will cause errors instead of warnings.
+     * Only use MCP servers passed via the `mcpServers` option (and servers
+     * declared by explicitly-passed agent definitions in `agents`), ignoring
+     * all other MCP configurations: project `.mcp.json`, user settings,
+     * plugins, and on-disk agent frontmatter — including subagent frontmatter
+     * MCP. Maps to the CLI `--strict-mcp-config` flag.
      */
     strictMcpConfig?: boolean;
     /**
@@ -2569,6 +2613,19 @@ export declare type SDKAssistantMessage = {
      * Description of the subagent task that produced this message.
      */
     task_description?: string;
+
+
+
+
+
+
+
+
+
+
+
+
+
 };
 
 export declare type SDKAssistantMessageError = 'authentication_failed' | 'oauth_org_not_allowed' | 'billing_error' | 'rate_limit' | 'invalid_request' | 'model_not_found' | 'server_error' | 'unknown' | 'max_output_tokens';
@@ -3238,7 +3295,7 @@ export declare type SDKMemoryRecallMessage = {
     session_id: string;
 };
 
-export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKSessionStateChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage;
+export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage;
 
 /**
  * Provenance of a user-role message (peer session, team lead, channel). Absent or `human` means keyboard input from the user.
@@ -3650,6 +3707,18 @@ export declare type SDKTaskUpdatedMessage = {
     session_id: string;
 };
 
+/**
+ * Live thinking-token estimate, digested from thinking_delta.estimated_tokens during the redacted-thinking phase (where the API otherwise streams only pings). estimated_tokens is the running total for the current thinking block; estimated_tokens_delta is the increment carried by this frame. Approximate progress for spinners/pills, not the authoritative billed output_tokens.
+ */
+export declare type SDKThinkingTokensMessage = {
+    type: 'system';
+    subtype: 'thinking_tokens';
+    estimated_tokens: number;
+    estimated_tokens_delta: number;
+    uuid: UUID;
+    session_id: string;
+};
+
 export declare type SDKToolProgressMessage = {
     type: 'tool_progress';
     tool_use_id: string;
@@ -3796,13 +3865,19 @@ export declare type SessionStartHookInput = BaseHookInput & {
     source: 'startup' | 'resume' | 'clear' | 'compact';
     agent_type?: string;
     model?: string;
+    session_title?: string;
 };
 
 export declare type SessionStartHookSpecificOutput = {
     hookEventName: 'SessionStart';
     additionalContext?: string;
     initialUserMessage?: string;
+    sessionTitle?: string;
     watchPaths?: string[];
+    /**
+     * Re-scan skill and command directories after SessionStart hooks complete, so skills installed by the hook are available in the same session
+     */
+    reloadSkills?: boolean;
 };
 
 /**
@@ -4380,6 +4455,14 @@ export declare interface Settings {
      */
     disableRemoteControl?: boolean;
     /**
+     * Disable the Workflows feature (also via CLAUDE_CODE_DISABLE_WORKFLOWS).
+     */
+    disableWorkflows?: boolean;
+    /**
+     * Enable or disable the Workflows feature for this user. Unset = default by plan once the feature is available.
+     */
+    enableWorkflows?: boolean;
+    /**
      * Disable inline shell execution in skills and custom slash commands from user, project, or plugin sources. Commands are replaced with a placeholder instead of being run.
      */
     disableSkillShellExecution?: boolean;
@@ -4488,6 +4571,10 @@ export declare interface Settings {
                  * Directories to include via git sparse-checkout (cone mode). Use for monorepos where the marketplace lives in a subdirectory. Example: [".claude-plugin", "plugins"]. If omitted, the full repository is cloned.
                  */
                 sparsePaths?: string[];
+                /**
+                 * Skip Git LFS smudge during clone and update (sets GIT_LFS_SKIP_SMUDGE=1) so LFS pointer files stay as pointers instead of downloading their content. Use for marketplaces hosted in repos with large LFS objects.
+                 */
+                skipLfs?: boolean;
             } | {
                 source: 'git';
                 /**
@@ -4506,6 +4593,10 @@ export declare interface Settings {
                  * Directories to include via git sparse-checkout (cone mode). Use for monorepos where the marketplace lives in a subdirectory. Example: [".claude-plugin", "plugins"]. If omitted, the full repository is cloned.
                  */
                 sparsePaths?: string[];
+                /**
+                 * Skip Git LFS smudge during clone and update (sets GIT_LFS_SKIP_SMUDGE=1) so LFS pointer files stay as pointers instead of downloading their content. Use for marketplaces hosted in repos with large LFS objects.
+                 */
+                skipLfs?: boolean;
             } | {
                 source: 'npm';
                 /**
@@ -4680,6 +4771,10 @@ export declare interface Settings {
          * Directories to include via git sparse-checkout (cone mode). Use for monorepos where the marketplace lives in a subdirectory. Example: [".claude-plugin", "plugins"]. If omitted, the full repository is cloned.
          */
         sparsePaths?: string[];
+        /**
+         * Skip Git LFS smudge during clone and update (sets GIT_LFS_SKIP_SMUDGE=1) so LFS pointer files stay as pointers instead of downloading their content. Use for marketplaces hosted in repos with large LFS objects.
+         */
+        skipLfs?: boolean;
     } | {
         source: 'git';
         /**
@@ -4698,6 +4793,10 @@ export declare interface Settings {
          * Directories to include via git sparse-checkout (cone mode). Use for monorepos where the marketplace lives in a subdirectory. Example: [".claude-plugin", "plugins"]. If omitted, the full repository is cloned.
          */
         sparsePaths?: string[];
+        /**
+         * Skip Git LFS smudge during clone and update (sets GIT_LFS_SKIP_SMUDGE=1) so LFS pointer files stay as pointers instead of downloading their content. Use for marketplaces hosted in repos with large LFS objects.
+         */
+        skipLfs?: boolean;
     } | {
         source: 'npm';
         /**
@@ -4862,6 +4961,10 @@ export declare interface Settings {
          * Directories to include via git sparse-checkout (cone mode). Use for monorepos where the marketplace lives in a subdirectory. Example: [".claude-plugin", "plugins"]. If omitted, the full repository is cloned.
          */
         sparsePaths?: string[];
+        /**
+         * Skip Git LFS smudge during clone and update (sets GIT_LFS_SKIP_SMUDGE=1) so LFS pointer files stay as pointers instead of downloading their content. Use for marketplaces hosted in repos with large LFS objects.
+         */
+        skipLfs?: boolean;
     } | {
         source: 'git';
         /**
@@ -4880,6 +4983,10 @@ export declare interface Settings {
          * Directories to include via git sparse-checkout (cone mode). Use for monorepos where the marketplace lives in a subdirectory. Example: [".claude-plugin", "plugins"]. If omitted, the full repository is cloned.
          */
         sparsePaths?: string[];
+        /**
+         * Skip Git LFS smudge during clone and update (sets GIT_LFS_SKIP_SMUDGE=1) so LFS pointer files stay as pointers instead of downloading their content. Use for marketplaces hosted in repos with large LFS objects.
+         */
+        skipLfs?: boolean;
     } | {
         source: 'npm';
         /**
@@ -5011,6 +5118,10 @@ export declare interface Settings {
             url?: string;
         };
     })[];
+    /**
+     * Marketplace names whose plugins may surface as contextual install suggestions (relevance-based tips), in addition to the official marketplace. Only honored when set in managed settings (policy scope); the key is ignored in user, project, and local settings. A name only takes effect when the marketplace is registered on the machine AND its registered source is also declared in managed settings, either as the extraKnownMarketplaces entry for that name or as an entry of strictKnownMarketplaces. A marketplace registered from a different source under an allowlisted name is ignored.
+     */
+    pluginSuggestionMarketplaces?: string[];
     /**
      * Force a specific login method: "claudeai" for Claude Pro/Max, "console" for Console billing
      */
@@ -5178,6 +5289,10 @@ export declare interface Settings {
      */
     effortLevel?: 'low' | 'medium' | 'high' | 'xhigh';
     /**
+     * Enable ultracode for the session: xhigh effort plus standing dynamic-workflow orchestration. Session-scoped — typically provided via --settings or the apply_flag_settings control request; interactive toggles never persist it. Requires workflows to be enabled and an xhigh-capable model.
+     */
+    ultracode?: boolean;
+    /**
      * Auto-compact window size
      */
     autoCompactWindow?: number;
@@ -5299,13 +5414,14 @@ export declare interface Settings {
      */
     autoDreamEnabled?: boolean;
     /**
-     * Show thinking summaries in the transcript view (ctrl+o). Default: false.
+     * Request API-side thinking summaries and show them in the conversation and in the transcript view (ctrl+o). Set explicitly to override the default for your install.
      */
     showThinkingSummaries?: boolean;
     /**
      * Whether the user has accepted the bypass permissions mode dialog
      */
     skipDangerousModePermissionPrompt?: boolean;
+
     /**
      * Disable auto mode
      */
@@ -5636,7 +5752,7 @@ export declare type SyncHookJSONOutput = {
     reason?: string;
 
 
-    hookSpecificOutput?: PreToolUseHookSpecificOutput | UserPromptSubmitHookSpecificOutput | UserPromptExpansionHookSpecificOutput | SessionStartHookSpecificOutput | SetupHookSpecificOutput | SubagentStartHookSpecificOutput | PostToolUseHookSpecificOutput | PostToolUseFailureHookSpecificOutput | PostToolBatchHookSpecificOutput | PermissionDeniedHookSpecificOutput | NotificationHookSpecificOutput | PermissionRequestHookSpecificOutput | ElicitationHookSpecificOutput | ElicitationResultHookSpecificOutput | CwdChangedHookSpecificOutput | FileChangedHookSpecificOutput | WorktreeCreateHookSpecificOutput;
+    hookSpecificOutput?: PreToolUseHookSpecificOutput | UserPromptSubmitHookSpecificOutput | UserPromptExpansionHookSpecificOutput | SessionStartHookSpecificOutput | SetupHookSpecificOutput | SubagentStartHookSpecificOutput | PostToolUseHookSpecificOutput | PostToolUseFailureHookSpecificOutput | PostToolBatchHookSpecificOutput | PermissionDeniedHookSpecificOutput | NotificationHookSpecificOutput | PermissionRequestHookSpecificOutput | ElicitationHookSpecificOutput | ElicitationResultHookSpecificOutput | CwdChangedHookSpecificOutput | FileChangedHookSpecificOutput | WorktreeCreateHookSpecificOutput | MessageDisplayHookSpecificOutput;
 };
 
 /**
