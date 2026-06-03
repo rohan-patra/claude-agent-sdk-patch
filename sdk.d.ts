@@ -294,6 +294,9 @@ declare type ControlErrorResponse = {
     subtype: 'error';
     request_id: string;
     error: string;
+    /**
+     * Permission requests still awaiting a response. Sent on the `initialize` response so a client joining an already-initialized session learns about in-flight prompts.
+     */
     pending_permission_requests?: SDKControlRequest[];
 };
 
@@ -301,6 +304,10 @@ declare type ControlResponse = {
     subtype: 'success';
     request_id: string;
     response?: Record<string, unknown>;
+    /**
+     * Permission requests still awaiting a response. Sent on the `initialize` response so a client joining an already-initialized session learns about in-flight prompts.
+     */
+    pending_permission_requests?: SDKControlRequest[];
 };
 
 declare namespace coreTypes {
@@ -385,6 +392,7 @@ declare namespace coreTypes {
         SDKAssistantMessageError,
         SDKAssistantMessage,
         SDKAuthStatusMessage,
+        SDKCommandsChangedMessage,
         SDKCompactBoundaryMessage,
         SDKDeferredToolUse,
         SDKElicitationCompleteMessage,
@@ -1399,7 +1407,10 @@ export declare type Options = {
      */
     extraArgs?: Record<string, string | null>;
     /**
-     * Fallback model to use if the primary model fails or is unavailable.
+     * Fallback model(s) to use if the primary model is overloaded or
+     * unavailable. Accepts a comma-separated list to try each in order. The
+     * primary model is re-tried at the start of each user turn, so a temporary
+     * outage doesn't permanently demote the session.
      */
     fallbackModel?: string;
     /**
@@ -2628,7 +2639,7 @@ export declare type SDKAssistantMessage = {
 
 };
 
-export declare type SDKAssistantMessageError = 'authentication_failed' | 'oauth_org_not_allowed' | 'billing_error' | 'rate_limit' | 'invalid_request' | 'model_not_found' | 'server_error' | 'unknown' | 'max_output_tokens';
+export declare type SDKAssistantMessageError = 'authentication_failed' | 'oauth_org_not_allowed' | 'billing_error' | 'rate_limit' | 'overloaded' | 'invalid_request' | 'model_not_found' | 'server_error' | 'unknown' | 'max_output_tokens';
 
 export declare type SDKAuthStatusMessage = {
     type: 'auth_status';
@@ -2640,6 +2651,17 @@ export declare type SDKAuthStatusMessage = {
 };
 
 export declare type SdkBeta = 'context-1m-2025-08-07';
+
+/**
+ * Fire-and-forget push of the full slash-command list after a mid-session change (e.g. skills discovered dynamically as the agent works in a subdirectory). Clients should REPLACE their cached command list with this payload: supportedCommands() is captured once at initialize and never reflects mid-session changes, so a client re-fetch would return the stale init list.
+ */
+export declare type SDKCommandsChangedMessage = {
+    type: 'system';
+    subtype: 'commands_changed';
+    commands: SlashCommand[];
+    uuid: UUID;
+    session_id: string;
+};
 
 export declare type SDKCompactBoundaryMessage = {
     type: 'system';
@@ -3062,7 +3084,7 @@ export declare type SDKControlRequest = {
     request: SDKControlRequestInner;
 };
 
-declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlReloadPluginsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlChannelEnableRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlClaudeOAuthWaitForCompletionRequest | SDKControlRemoteControlRequest | SDKControlGenerateSessionTitleRequest | SDKControlSideQuestionRequest | SDKControlUltrareviewLaunchRequest | SDKControlMessageRatedRequest | SDKControlOAuthTokenRefreshRequest | SDKControlHostAuthTokenRefreshRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest | SDKControlSubmitFeedbackRequest;
+declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlReloadPluginsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlChannelEnableRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlClaudeOAuthWaitForCompletionRequest | SDKControlRemoteControlRequest | SDKControlGenerateSessionTitleRequest | SDKControlSideQuestionRequest | SDKControlUltrareviewLaunchRequest | SDKControlStageFileRequest | SDKControlMessageRatedRequest | SDKControlOAuthTokenRefreshRequest | SDKControlHostAuthTokenRefreshRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest | SDKControlSubmitFeedbackRequest;
 
 /**
  * Requests the SDK consumer to render a tool-driven blocking dialog and return the user choice. Used by tools that previously rendered Ink JSX via setToolJSX with an onDone callback.
@@ -3070,7 +3092,7 @@ declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPer
 declare type SDKControlRequestUserDialogRequest = {
     subtype: 'request_user_dialog';
     /**
-     * Identifier for the dialog the host should render. Open string union — known kinds include "it2_setup" and "computer_use_approval"; new kinds may be added without bumping the protocol.
+     * Identifier for the dialog the host should render. Open string union — known kinds include "it2_setup", "computer_use_approval", and "refusal_fallback_prompt"; new kinds may be added without bumping the protocol.
      */
     dialog_kind: string;
     /**
@@ -3295,7 +3317,7 @@ export declare type SDKMemoryRecallMessage = {
     session_id: string;
 };
 
-export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage;
+export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKCommandsChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage;
 
 /**
  * Provenance of a user-role message (peer session, team lead, channel). Absent or `human` means keyboard input from the user.
@@ -3313,6 +3335,8 @@ export declare type SDKMessageOrigin = {
     kind: 'task-notification';
 } | {
     kind: 'coordinator';
+} | {
+    kind: 'auto-continuation';
 };
 
 /**
@@ -4488,7 +4512,7 @@ export declare interface Settings {
      */
     enableWorkflows?: boolean;
     /**
-     * Enable the "workflow"/"workflows" keyword trigger that opts a prompt into the Workflow tool. Set to false to type the word without triggering a workflow. Default: true.
+     * Enable the "ultracode" keyword trigger: including the keyword in a prompt opts that turn into the Workflow tool. Set to false to disable the trigger. Default: true.
      */
     workflowKeywordTriggerEnabled?: boolean;
     /**
@@ -5516,6 +5540,10 @@ export declare interface Settings {
      * Automatically compact conversation when context fills
      */
     autoCompactEnabled?: boolean;
+    /**
+     * When safety filters block a message, automatically switch to a different model to keep chatting. When off, your chat may stop instead.
+     */
+    switchModelsOnFlag?: boolean;
     /**
      * Auto-scroll the conversation view to bottom (fullscreen mode only)
      */
