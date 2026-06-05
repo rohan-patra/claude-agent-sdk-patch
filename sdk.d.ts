@@ -443,9 +443,11 @@ declare namespace coreTypes {
         SlashCommand,
         StopFailureHookInput,
         StopHookInput,
+        StopHookSpecificOutput,
         SubagentStartHookInput,
         SubagentStartHookSpecificOutput,
         SubagentStopHookInput,
+        SubagentStopHookSpecificOutput,
         SyncHookJSONOutput,
         TaskCompletedHookInput,
         TaskCreatedHookInput,
@@ -1000,7 +1002,7 @@ export declare type McpClaudeAIProxyServerConfig = {
     url: string;
     id: string;
     /**
-     * Per-server tool-call timeout in milliseconds. Overrides the MCP_TOOL_TIMEOUT environment variable for this server. Hard wall-clock limit per call; progress notifications do not extend it. Floored at 1000ms.
+     * Per-server tool-call timeout in milliseconds. Overrides the MCP_TOOL_TIMEOUT environment variable for this server. Hard wall-clock limit per call; progress notifications do not extend it. Values below 1000ms are ignored (falls through to MCP_TOOL_TIMEOUT or the default).
      */
     timeout?: number;
 };
@@ -1011,7 +1013,7 @@ export declare type McpHttpServerConfig = {
     headers?: Record<string, string>;
     tools?: McpServerToolPolicy[];
     /**
-     * Per-server tool-call timeout in milliseconds. Overrides the MCP_TOOL_TIMEOUT environment variable for this server. Hard wall-clock limit per call; progress notifications do not extend it. Floored at 1000ms.
+     * Per-server tool-call timeout in milliseconds. Overrides the MCP_TOOL_TIMEOUT environment variable for this server. Hard wall-clock limit per call; progress notifications do not extend it. Values below 1000ms are ignored (falls through to MCP_TOOL_TIMEOUT or the default).
      */
     timeout?: number;
     /**
@@ -1121,7 +1123,7 @@ export declare type McpSSEServerConfig = {
     headers?: Record<string, string>;
     tools?: McpServerToolPolicy[];
     /**
-     * Per-server tool-call timeout in milliseconds. Overrides the MCP_TOOL_TIMEOUT environment variable for this server. Hard wall-clock limit per call; progress notifications do not extend it. Floored at 1000ms.
+     * Per-server tool-call timeout in milliseconds. Overrides the MCP_TOOL_TIMEOUT environment variable for this server. Hard wall-clock limit per call; progress notifications do not extend it. Values below 1000ms are ignored (falls through to MCP_TOOL_TIMEOUT or the default).
      */
     timeout?: number;
     /**
@@ -1137,7 +1139,7 @@ export declare type McpStdioServerConfig = {
     args?: string[];
     env?: Record<string, string>;
     /**
-     * Per-server tool-call timeout in milliseconds. Overrides the MCP_TOOL_TIMEOUT environment variable for this server. Hard wall-clock limit per call; progress notifications do not extend it. Floored at 1000ms.
+     * Per-server tool-call timeout in milliseconds. Overrides the MCP_TOOL_TIMEOUT environment variable for this server. Hard wall-clock limit per call; progress notifications do not extend it. Values below 1000ms are ignored (falls through to MCP_TOOL_TIMEOUT or the default).
      */
     timeout?: number;
     /**
@@ -1259,6 +1261,16 @@ export declare type OnElicitation = (request: ElicitationRequest, options: {
 }) => Promise<ElicitationResult>;
 
 /**
+ * Callback for handling `request_user_dialog` control requests.
+ * Called when the CLI asks the host to render a blocking dialog.
+ * If not provided, dialogs are answered as cancelled and the CLI applies
+ * each dialog's default behavior.
+ */
+export declare type OnUserDialog = (request: UserDialogRequest, options: {
+    signal: AbortSignal;
+}) => Promise<UserDialogResult>;
+
+/**
  * Options for the query function.
  * Contains callbacks and other non-serializable fields.
  */
@@ -1367,6 +1379,9 @@ export declare type Options = {
      * - `string[]` - Array of specific tool names (e.g., `['Bash', 'Read', 'Edit']`)
      * - `[]` (empty array) - Disable all built-in tools
      * - `{ type: 'preset'; preset: 'claude_code' }` - Use all default Claude Code tools
+     *
+     * Note: native builds may provide search via Bash `find`/`grep` instead of the
+     * dedicated Grep/Glob tools. List Grep/Glob here or in `allowedTools` to get them.
      */
     tools?: string[] | {
         type: 'preset';
@@ -1480,6 +1495,16 @@ export declare type Options = {
      * ```
      */
     onElicitation?: OnElicitation;
+    /**
+     * Callback for handling `request_user_dialog` control requests — blocking
+     * dialogs the CLI asks the host to render. Each `dialogKind` defines its
+     * own payload and result shape.
+     *
+     * If not provided — or when the host answers `{behavior: 'cancelled'}`,
+     * which is the required answer for an unrecognized `dialogKind` — the CLI
+     * applies the dialog's default behavior.
+     */
+    onUserDialog?: OnUserDialog;
     /**
      * When false, disables session persistence to disk. Sessions will not be
      * saved to ~/.claude/projects/ and cannot be resumed later. Useful for
@@ -2293,6 +2318,12 @@ export declare interface Query extends AsyncGenerator<SDKMessage, void> {
      */
     reloadPlugins(): Promise<SDKControlReloadPluginsResponse>;
     /**
+     * Reload skills from disk and return the refreshed skill list.
+     *
+     * @returns The refreshed skill commands after reload
+     */
+    reloadSkills(): Promise<SDKControlReloadSkillsResponse>;
+    /**
      * Get information about the authenticated account.
      *
      * @returns Account information including email, organization, and subscription type
@@ -2935,6 +2966,7 @@ export declare type SDKControlInitializeResponse = {
     account: coreTypes.AccountInfo;
 
     fast_mode_state?: coreTypes.FastModeState;
+
 };
 
 /**
@@ -3071,6 +3103,20 @@ export declare type SDKControlReloadPluginsResponse = {
 };
 
 /**
+ * Reloads skills from disk and returns the refreshed skill list.
+ */
+declare type SDKControlReloadSkillsRequest = {
+    subtype: 'reload_skills';
+};
+
+/**
+ * Refreshed skill commands after reload.
+ */
+export declare type SDKControlReloadSkillsResponse = {
+    skills: coreTypes.SlashCommand[];
+};
+
+/**
  * Sets the user-facing title for the current session.
  */
 declare type SDKControlRenameSessionRequest = {
@@ -3084,7 +3130,7 @@ export declare type SDKControlRequest = {
     request: SDKControlRequestInner;
 };
 
-declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlReloadPluginsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlChannelEnableRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlClaudeOAuthWaitForCompletionRequest | SDKControlRemoteControlRequest | SDKControlGenerateSessionTitleRequest | SDKControlSideQuestionRequest | SDKControlUltrareviewLaunchRequest | SDKControlStageFileRequest | SDKControlMessageRatedRequest | SDKControlOAuthTokenRefreshRequest | SDKControlHostAuthTokenRefreshRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest | SDKControlSubmitFeedbackRequest;
+declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlReloadPluginsRequest | SDKControlReloadSkillsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlChannelEnableRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlClaudeOAuthWaitForCompletionRequest | SDKControlRemoteControlRequest | SDKControlGenerateSessionTitleRequest | SDKControlSideQuestionRequest | SDKControlUltrareviewLaunchRequest | SDKControlStageFileRequest | SDKControlMessageRatedRequest | SDKControlOAuthTokenRefreshRequest | SDKControlHostAuthTokenRefreshRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest | SDKControlSubmitFeedbackRequest;
 
 /**
  * Requests the SDK consumer to render a tool-driven blocking dialog and return the user choice. Used by tools that previously rendered Ink JSX via setToolJSX with an onDone callback.
@@ -3092,7 +3138,7 @@ declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPer
 declare type SDKControlRequestUserDialogRequest = {
     subtype: 'request_user_dialog';
     /**
-     * Identifier for the dialog the host should render. Open string union — known kinds include "it2_setup", "computer_use_approval", and "refusal_fallback_prompt"; new kinds may be added without bumping the protocol.
+     * Identifier for the dialog the host should render. Open string union — new kinds may be added without bumping the protocol; hosts must answer unrecognized kinds with {behavior: "cancelled"}.
      */
     dialog_kind: string;
     /**
@@ -3506,6 +3552,9 @@ export declare type SDKResultSuccess = {
     duration_ms: number;
     duration_api_ms: number;
     ttft_ms?: number;
+    time_to_request_ms?: number;
+    time_to_request_from_spawn_ms?: number;
+    warm_spare_claimed?: boolean;
     is_error: boolean;
     api_error_status?: number | null;
     num_turns: number;
@@ -5176,9 +5225,10 @@ export declare interface Settings {
      */
     pluginSuggestionMarketplaces?: string[];
     /**
-     * Force a specific login method: "claudeai" for Claude Pro/Max, "console" for Console billing
+     * Force a specific login method: "claudeai" for Claude Pro/Max, "console" for Console billing, "gateway" for the Cloud gateway OIDC device flow
      */
-    forceLoginMethod?: 'claudeai' | 'console';
+    forceLoginMethod?: 'claudeai' | 'console' | 'gateway';
+
     /**
      * Controls whether the SDK parent tier (Options.managedSettings / --managed-settings) layers under this admin tier. "first-wins" (default): parent is dropped — admin tiers are the only policy source. "merge": parent's restrictive-only-filtered settings union under the admin winner. Has no effect when no admin tier exists (parent applies as the sole policy tier, still filtered restrictive-only).
      */
@@ -5416,6 +5466,14 @@ export declare interface Settings {
      * Minimum version to stay on - prevents downgrades when switching to stable channel
      */
     minimumVersion?: string;
+    /**
+     * Minimum Claude Code version required to start. If the running version is older, Claude Code exits at startup with instructions to update. Only enforced from managed (policy) settings.
+     */
+    requiredMinimumVersion?: string;
+    /**
+     * Maximum Claude Code version allowed to start. If the running version is newer, Claude Code exits at startup with instructions to install an approved version. Only enforced from managed (policy) settings.
+     */
+    requiredMaximumVersion?: string;
     /**
      * Custom directory for plan files, relative to project root. If not set, defaults to ~/.claude/plans/
      */
@@ -5763,6 +5821,14 @@ export declare type StopHookInput = BaseHookInput & {
 
 };
 
+/**
+ * Hook-specific output for the Stop event. additionalContext is non-error feedback delivered to the model; the conversation continues so the model can act on it.
+ */
+export declare type StopHookSpecificOutput = {
+    hookEventName: 'Stop';
+    additionalContext?: string;
+};
+
 export declare type SubagentStartHookInput = BaseHookInput & {
     hook_event_name: 'SubagentStart';
     agent_id: string;
@@ -5796,6 +5862,14 @@ export declare type SubagentStopHookInput = BaseHookInput & {
 
 };
 
+/**
+ * Hook-specific output for the SubagentStop event. additionalContext is non-error feedback delivered to the subagent; the subagent continues so it can act on it.
+ */
+export declare type SubagentStopHookSpecificOutput = {
+    hookEventName: 'SubagentStop';
+    additionalContext?: string;
+};
+
 export declare type SyncHookJSONOutput = {
     continue?: boolean;
     suppressOutput?: boolean;
@@ -5809,7 +5883,7 @@ export declare type SyncHookJSONOutput = {
     reason?: string;
 
 
-    hookSpecificOutput?: PreToolUseHookSpecificOutput | UserPromptSubmitHookSpecificOutput | UserPromptExpansionHookSpecificOutput | SessionStartHookSpecificOutput | SetupHookSpecificOutput | SubagentStartHookSpecificOutput | PostToolUseHookSpecificOutput | PostToolUseFailureHookSpecificOutput | PostToolBatchHookSpecificOutput | PermissionDeniedHookSpecificOutput | NotificationHookSpecificOutput | PermissionRequestHookSpecificOutput | ElicitationHookSpecificOutput | ElicitationResultHookSpecificOutput | CwdChangedHookSpecificOutput | FileChangedHookSpecificOutput | WorktreeCreateHookSpecificOutput | MessageDisplayHookSpecificOutput;
+    hookSpecificOutput?: PreToolUseHookSpecificOutput | UserPromptSubmitHookSpecificOutput | UserPromptExpansionHookSpecificOutput | SessionStartHookSpecificOutput | SetupHookSpecificOutput | SubagentStartHookSpecificOutput | PostToolUseHookSpecificOutput | PostToolUseFailureHookSpecificOutput | PostToolBatchHookSpecificOutput | StopHookSpecificOutput | SubagentStopHookSpecificOutput | PermissionDeniedHookSpecificOutput | NotificationHookSpecificOutput | PermissionRequestHookSpecificOutput | ElicitationHookSpecificOutput | ElicitationResultHookSpecificOutput | CwdChangedHookSpecificOutput | FileChangedHookSpecificOutput | WorktreeCreateHookSpecificOutput | MessageDisplayHookSpecificOutput;
 };
 
 /**
@@ -5950,6 +6024,39 @@ export declare interface Transport {
      */
     [Symbol.dispose]?(): void;
 }
+
+/**
+ * A `request_user_dialog` control request from the CLI, asking the SDK
+ * consumer to render a blocking dialog and return the user's choice.
+ * Each `dialogKind` defines its own payload and result shape; the protocol
+ * transports both opaquely.
+ */
+export declare type UserDialogRequest = {
+    /**
+     * Identifier for the dialog the host should render. Open string union —
+     * new kinds may be added without a protocol bump, so hosts must answer
+     * unrecognized kinds with `{behavior: 'cancelled'}`.
+     */
+    dialogKind: string;
+    /** Dialog-specific data for the host renderer; shape is defined per dialogKind. */
+    payload: Record<string, unknown>;
+    /**
+     * Present when the dialog is tied to a specific tool invocation. Same
+     * value as the `toolUseID` passed to `canUseTool`.
+     */
+    toolUseID?: string;
+};
+
+/**
+ * The host's answer to a {@link UserDialogRequest}. On `cancelled`, the CLI
+ * applies the dialog's default behavior.
+ */
+export declare type UserDialogResult = {
+    behavior: 'completed';
+    result: unknown;
+} | {
+    behavior: 'cancelled';
+};
 
 export declare type UserPromptExpansionHookInput = BaseHookInput & {
     hook_event_name: 'UserPromptExpansion';
