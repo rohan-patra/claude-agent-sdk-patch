@@ -53,7 +53,7 @@ export declare type AgentDefinition = {
      */
     prompt: string;
     /**
-     * Model alias (e.g. 'sonnet', 'opus', 'haiku') or full model ID (e.g. 'claude-opus-4-5'). If omitted or 'inherit', uses the main model
+     * Model alias (e.g. 'fable', 'opus', 'sonnet', 'haiku') or full model ID (e.g. 'claude-fable-5'). If omitted or 'inherit', uses the main model
      */
     model?: string;
     mcpServers?: AgentMcpServerSpec[];
@@ -298,6 +298,10 @@ declare type ControlErrorResponse = {
      * Permission requests still awaiting a response. Sent on the `initialize` response so a client joining an already-initialized session learns about in-flight prompts.
      */
     pending_permission_requests?: SDKControlRequest[];
+    /**
+     * request_user_dialog requests still awaiting a response. Sent on the `initialize` response (sibling of pending_permission_requests) so a client joining an already-initialized session can re-arm in-flight dialogs. Receivers must tolerate the same request_id also arriving as a live or replayed control_request frame and render it once.
+     */
+    pending_user_dialog_requests?: SDKControlRequest[];
 };
 
 declare type ControlResponse = {
@@ -308,6 +312,10 @@ declare type ControlResponse = {
      * Permission requests still awaiting a response. Sent on the `initialize` response so a client joining an already-initialized session learns about in-flight prompts.
      */
     pending_permission_requests?: SDKControlRequest[];
+    /**
+     * request_user_dialog requests still awaiting a response. Sent on the `initialize` response (sibling of pending_permission_requests) so a client joining an already-initialized session can re-arm in-flight dialogs. Receivers must tolerate the same request_id also arriving as a live or replayed control_request frame and render it once.
+     */
+    pending_user_dialog_requests?: SDKControlRequest[];
 };
 
 declare namespace coreTypes {
@@ -405,6 +413,7 @@ declare namespace coreTypes {
         SDKMessageOrigin,
         SDKMessage,
         SDKMirrorErrorMessage,
+        SDKModelRefusalFallbackMessage,
         SDKNotificationMessage,
         SDKPartialAssistantMessage,
         SDKPermissionDenial,
@@ -529,7 +538,7 @@ export declare function deleteSession(_sessionId: string, _options?: SessionMuta
  * - `'low'` — Minimal thinking, fastest responses
  * - `'medium'` — Moderate thinking
  * - `'high'` — Deep reasoning (default)
- * - `'xhigh'` — Deeper than high (Opus 4.7+; falls back to `'high'` elsewhere)
+ * - `'xhigh'` — Deeper than high (Fable 5, Opus 4.7+; falls back to `'high'` elsewhere)
  * - `'max'` — Maximum effort (select models only)
  */
 export declare type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -1223,6 +1232,7 @@ export declare type ModelInfo = {
      * Whether this model supports auto mode
      */
     supportsAutoMode?: boolean;
+
 };
 
 export declare type ModelUsage = {
@@ -1500,11 +1510,37 @@ export declare type Options = {
      * dialogs the CLI asks the host to render. Each `dialogKind` defines its
      * own payload and result shape.
      *
-     * If not provided — or when the host answers `{behavior: 'cancelled'}`,
-     * which is the required answer for an unrecognized `dialogKind` — the CLI
-     * applies the dialog's default behavior.
+     * When the host answers `{behavior: 'cancelled'}` — the required answer
+     * for an unrecognized `dialogKind` — the CLI applies the dialog's default
+     * behavior. If the callback is not provided at all, the SDK sends no
+     * answer: on a multi-client session another attached client may be the
+     * declared renderer, and an auto-reply from this one would settle the
+     * dialog out from under it. An unanswered dialog is bounded by the CLI's
+     * park deadline.
      */
     onUserDialog?: OnUserDialog;
+    /**
+     * Dialog kinds this consumer's `onUserDialog` can actually render
+     * (`request_user_dialog` `dialog_kind` values, e.g.
+     * 'refusal_fallback_prompt'). Declare only kinds your UI genuinely
+     * displays and answers. Providing `onUserDialog` alone does NOT opt the
+     * consumer into receiving dialogs — the CLI only emits a dialog kind
+     * declared here.
+     *
+     * The CLI fails closed on absence: a dialog kind not declared here is
+     * never emitted to this session — the flow behind it degrades to its
+     * no-dialog behavior instead (for 'refusal_fallback_prompt', the classic
+     * refusal error message ends the turn). Omitting the option entirely
+     * means no dialogs are emitted, even with `onUserDialog` wired.
+     *
+     * Requires `onUserDialog`; passing a non-empty list without the callback
+     * throws at option intake. On multi-client (remote) sessions the first
+     * attached client's declaration wins for the worker's lifetime, and the
+     * winning declaration is persisted to worker metadata so it survives
+     * worker restarts (restored as a default that the next epoch's first
+     * explicit declaration overrides).
+     */
+    supportedDialogKinds?: string[];
     /**
      * When false, disables session persistence to disk. Sessions will not be
      * saved to ~/.claude/projects/ and cannot be resumed later. Useful for
@@ -1585,8 +1621,8 @@ export declare type Options = {
      * - `'low'` — Minimal thinking, fastest responses
      * - `'medium'` — Moderate thinking
      * - `'high'` — Deep reasoning (default)
-     * - `'xhigh'` — Deeper than high (Opus 4.7+)
-     * - `'max'` — Maximum effort (Opus 4.6+, Sonnet 4.6)
+     * - `'xhigh'` — Deeper than high (Fable 5, Opus 4.7+)
+     * - `'max'` — Maximum effort (Fable 5, Opus 4.6+, Sonnet 4.6)
      *
      * @see https://docs.anthropic.com/en/docs/build-with-claude/effort
      */
@@ -1637,7 +1673,7 @@ export declare type Options = {
     mcpServers?: Record<string, McpServerConfig>;
     /**
      * Claude model to use. Defaults to the CLI default model.
-     * Examples: 'claude-sonnet-4-6', 'claude-opus-4-8'
+     * Examples: 'claude-sonnet-4-6', 'claude-opus-4-8', 'claude-fable-5'
      */
     model?: string;
     /**
@@ -2297,6 +2333,20 @@ export declare interface Query extends AsyncGenerator<SDKMessage, void> {
      */
     getContextUsage(): Promise<SDKControlGetContextUsageResponse>;
     /**
+     * Get the structured data behind the `/usage` command: session cost and
+     * token usage totals plus claude.ai plan rate-limit utilization windows
+     * (5-hour, 7-day, per-model) when available. `rate_limits_available` is
+     * false (and `rate_limits` null) for API key, Bedrock, Vertex, and other
+     * sessions where plan limits do not apply.
+     *
+     * EXPERIMENTAL: this API is unstable and may change or be removed in any
+     * release without notice — do not rely on it yet. The method name will
+     * change when the API is stabilized.
+     *
+     * @returns Structured session cost/usage data and plan rate-limit utilization
+     */
+    usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(): Promise<SDKControlGetUsageResponse>;
+    /**
      * Read a file from the session's filesystem for the remote sidebar
      * viewer. Path is resolved against cwd and gated by the same
      * read-permission rules as the Read tool. Returns null on permission
@@ -2648,6 +2698,10 @@ export declare type SDKAssistantMessage = {
     session_id: string;
     request_id?: string;
     /**
+     * Wire uuids of previously-delivered messages that this message replaces (refusal-fallback supersede). The list can include tombstoned tool_result frames from the refused leg, not only assistant frames. Evict the named messages on arrival and treat this frame as their canonical replacement. Idempotent with the end-of-turn model_refusal_fallback notice, whose retracted_message_uuids remains the complete audit record for the turn.
+     */
+    supersedes?: UUID[];
+    /**
      * Subagent type that produced this message.
      */
     subagent_type?: string;
@@ -2702,6 +2756,10 @@ export declare type SDKCompactBoundaryMessage = {
         pre_tokens: number;
         post_tokens?: number;
         duration_ms?: number;
+
+
+
+
         /**
          * Relink info for messagesToKeep. Loaders splice the preserved segment at anchor_uuid (summary for suffix-preserving, boundary for prefix-preserving partial compact) so resume includes preserved content. Unset when compaction summarizes everything (no messagesToKeep).
          */
@@ -2716,8 +2774,10 @@ export declare type SDKCompactBoundaryMessage = {
         preserved_messages?: {
             anchor_uuid: UUID;
             uuids: UUID[];
+
         };
     };
+
     uuid: UUID;
     session_id: string;
 };
@@ -2914,6 +2974,215 @@ declare type SDKControlGetSettingsRequest = {
 };
 
 /**
+ * Requests the structured /usage data: session cost/usage totals plus claude.ai plan rate-limit utilization when available. Experimental — the response shape may change.
+ */
+declare type SDKControlGetUsageRequest = {
+    subtype: 'get_usage';
+};
+
+/**
+ * Structured /usage data: session cost/usage totals plus claude.ai plan rate-limit utilization. Experimental — the shape may change.
+ */
+export declare type SDKControlGetUsageResponse = {
+    /**
+     * Cost and usage accumulated by the current session.
+     */
+    session: {
+        total_cost_usd: number;
+        total_api_duration_ms: number;
+        total_duration_ms: number;
+        total_lines_added: number;
+        total_lines_removed: number;
+        model_usage: Record<string, coreTypes.ModelUsage>;
+    };
+    /**
+     * Claude.ai subscription type ('pro', 'max', 'team', 'enterprise') or null for API key / 3P provider sessions.
+     */
+    subscription_type: string | null;
+    /**
+     * False when plan rate limits do not apply (API key, Bedrock, Vertex, or missing profile scope) — rate_limits will be null.
+     */
+    rate_limits_available: boolean;
+    /**
+     * Plan rate-limit utilization windows from the claude.ai usage endpoint, or null when unavailable.
+     */
+    rate_limits: {
+        five_hour?: {
+            /**
+             * Percentage of the window used, 0-100.
+             */
+            utilization: number | null;
+            /**
+             * ISO 8601 timestamp when the window resets.
+             */
+            resets_at: string | null;
+        } | null;
+        seven_day?: {
+            /**
+             * Percentage of the window used, 0-100.
+             */
+            utilization: number | null;
+            /**
+             * ISO 8601 timestamp when the window resets.
+             */
+            resets_at: string | null;
+        } | null;
+        seven_day_oauth_apps?: {
+            /**
+             * Percentage of the window used, 0-100.
+             */
+            utilization: number | null;
+            /**
+             * ISO 8601 timestamp when the window resets.
+             */
+            resets_at: string | null;
+        } | null;
+        seven_day_opus?: {
+            /**
+             * Percentage of the window used, 0-100.
+             */
+            utilization: number | null;
+            /**
+             * ISO 8601 timestamp when the window resets.
+             */
+            resets_at: string | null;
+        } | null;
+        seven_day_sonnet?: {
+            /**
+             * Percentage of the window used, 0-100.
+             */
+            utilization: number | null;
+            /**
+             * ISO 8601 timestamp when the window resets.
+             */
+            resets_at: string | null;
+        } | null;
+        extra_usage?: {
+            is_enabled: boolean;
+            monthly_limit: number | null;
+            used_credits: number | null;
+            utilization: number | null;
+            currency?: string | null;
+        } | null;
+    } | null;
+    /**
+     * What's contributing to limits usage, from a scan of local transcripts on this machine (the same data the /usage dialog renders): behavioral characteristics plus per-skill/agent/plugin/MCP-server attribution. Approximate, excludes other devices and claude.ai. Null for non-claude.ai-subscriber sessions (mirrors the dialog) or when the scan fails.
+     */
+    behaviors: {
+        /**
+         * Last 24 hours.
+         */
+        day: {
+            /**
+             * API requests found in local transcripts for this window.
+             */
+            request_count: number;
+            /**
+             * Distinct sessions observed in this window.
+             */
+            session_count: number;
+            /**
+             * Behavioral characteristics of local usage. Categories overlap — this is not a partition, so percentages do not sum to 100.
+             */
+            behaviors: {
+                key: 'cache_miss' | 'long_context' | 'subagent_heavy' | 'high_parallel' | 'cron';
+                /**
+                 * Share of the weighted local usage attributed to this behavior, 0-100.
+                 */
+                pct: number;
+                /**
+                 * Requests in this window exhibiting the behavior.
+                 */
+                count: number;
+            }[];
+            agents: {
+                name: string;
+                /**
+                 * Share of the weighted local usage attributed to this item, 0-100.
+                 */
+                pct: number;
+            }[];
+            skills: {
+                name: string;
+                /**
+                 * Share of the weighted local usage attributed to this item, 0-100.
+                 */
+                pct: number;
+            }[];
+            plugins: {
+                name: string;
+                /**
+                 * Share of the weighted local usage attributed to this item, 0-100.
+                 */
+                pct: number;
+            }[];
+            mcp_servers: {
+                name: string;
+                /**
+                 * Share of the weighted local usage attributed to this item, 0-100.
+                 */
+                pct: number;
+            }[];
+        };
+        /**
+         * Last 7 days.
+         */
+        week: {
+            /**
+             * API requests found in local transcripts for this window.
+             */
+            request_count: number;
+            /**
+             * Distinct sessions observed in this window.
+             */
+            session_count: number;
+            /**
+             * Behavioral characteristics of local usage. Categories overlap — this is not a partition, so percentages do not sum to 100.
+             */
+            behaviors: {
+                key: 'cache_miss' | 'long_context' | 'subagent_heavy' | 'high_parallel' | 'cron';
+                /**
+                 * Share of the weighted local usage attributed to this behavior, 0-100.
+                 */
+                pct: number;
+                /**
+                 * Requests in this window exhibiting the behavior.
+                 */
+                count: number;
+            }[];
+            agents: {
+                name: string;
+                /**
+                 * Share of the weighted local usage attributed to this item, 0-100.
+                 */
+                pct: number;
+            }[];
+            skills: {
+                name: string;
+                /**
+                 * Share of the weighted local usage attributed to this item, 0-100.
+                 */
+                pct: number;
+            }[];
+            plugins: {
+                name: string;
+                /**
+                 * Share of the weighted local usage attributed to this item, 0-100.
+                 */
+                pct: number;
+            }[];
+            mcp_servers: {
+                name: string;
+                /**
+                 * Share of the weighted local usage attributed to this item, 0-100.
+                 */
+                pct: number;
+            }[];
+        };
+    } | null;
+};
+
+/**
  * Initializes the SDK session with hooks, MCP servers, and agent configuration.
  */
 declare type SDKControlInitializeRequest = {
@@ -2949,6 +3218,10 @@ declare type SDKControlInitializeRequest = {
     promptSuggestions?: boolean;
     agentProgressSummaries?: boolean;
     forwardSubagentText?: boolean;
+    /**
+     * Dialog kinds (request_user_dialog `dialog_kind` values) this consumer's onUserDialog can actually render. The CLI treats ABSENCE as 'cannot display' and fails closed: without the kind declared here, a dialog-gated flow degrades to its no-dialog behavior (for 'refusal_fallback_prompt', the classic refusal error) instead of parking a dialog the consumer may mishandle. First-attached-client-wins on multi-client sessions; later initializes do not change it.
+     */
+    supportedDialogKinds?: string[];
 };
 
 /**
@@ -2960,6 +3233,7 @@ export declare type SDKControlInitializeResponse = {
     output_style: string;
     available_output_styles: string[];
     models: coreTypes.ModelInfo[];
+
     /**
      * Information about the logged in user's account.
      */
@@ -3141,7 +3415,7 @@ export declare type SDKControlRequest = {
     request: SDKControlRequestInner;
 };
 
-declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlRegisterRepoRootRequest | SDKControlReloadPluginsRequest | SDKControlReloadSkillsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlChannelEnableRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlClaudeOAuthWaitForCompletionRequest | SDKControlRemoteControlRequest | SDKControlGenerateSessionTitleRequest | SDKControlSideQuestionRequest | SDKControlUltrareviewLaunchRequest | SDKControlStageFileRequest | SDKControlMessageRatedRequest | SDKControlOAuthTokenRefreshRequest | SDKControlHostAuthTokenRefreshRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest | SDKControlSubmitFeedbackRequest;
+declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlGetUsageRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlRegisterRepoRootRequest | SDKControlReloadPluginsRequest | SDKControlReloadSkillsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlChannelEnableRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlClaudeOAuthWaitForCompletionRequest | SDKControlRemoteControlRequest | SDKControlGenerateSessionTitleRequest | SDKControlSideQuestionRequest | SDKControlUltrareviewLaunchRequest | SDKControlStageFileRequest | SDKControlMessageRatedRequest | SDKControlOAuthTokenRefreshRequest | SDKControlHostAuthTokenRefreshRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest | SDKControlSubmitFeedbackRequest;
 
 /**
  * Requests the SDK consumer to render a tool-driven blocking dialog and return the user choice. Used by tools that previously rendered Ink JSX via setToolJSX with an onDone callback.
@@ -3374,7 +3648,7 @@ export declare type SDKMemoryRecallMessage = {
     session_id: string;
 };
 
-export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKCommandsChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage;
+export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKModelRefusalFallbackMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKCommandsChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage;
 
 /**
  * Provenance of a user-role message (peer session, team lead, channel). Absent or `human` means keyboard input from the user.
@@ -3408,6 +3682,34 @@ export declare type SDKMirrorErrorMessage = {
         sessionId: string;
         subpath?: string;
     };
+    uuid: UUID;
+    session_id: string;
+};
+
+/**
+ * Emitted when the primary model ends the stream with stop_reason "refusal" and the turn is retried once on a fallback model with the swap made persistent for the session (direction: "retry"). "revert" and "sticky" are retained in the enum for SDK-consumer compat and are no longer emitted.
+ */
+export declare type SDKModelRefusalFallbackMessage = {
+    type: 'system';
+    subtype: 'model_refusal_fallback';
+    trigger: 'refusal';
+    direction: 'retry' | 'revert' | 'sticky';
+    original_model: string;
+    fallback_model: string;
+    request_id: string | null;
+    /**
+     * stop_details.category from the refused API response ("cyber", "bio", …). Open string — new categories ship on the wire ahead of schema updates. null when the response carried no category (normal, not an error). Absent when emitted by an older CLI.
+     */
+    api_refusal_category?: string | null;
+    /**
+     * stop_details.explanation from the refused API response. Unstable human prose — display only, never parse. null/absent under the same rules as api_refusal_category.
+     */
+    api_refusal_explanation?: string | null;
+    /**
+     * Wire uuids of the messages this fallback retracted — the refused partial as the consumer received it (one uuid per normalized SDK message; multi-block messages carry per-block derived uuids) plus any tombstoned tool_results. Emitted AFTER the retraction, so this is a resolution-time eviction signal: remove these messages from transcript state on receipt. Eviction is idempotent — unknown or already-removed uuids are a no-op. Absent when emitted by an older CLI.
+     */
+    retracted_message_uuids?: string[];
+    content: string;
     uuid: UUID;
     session_id: string;
 };
@@ -3532,6 +3834,7 @@ export declare type SDKRateLimitInfo = {
     overageResetsAt?: number;
     overageDisabledReason?: 'overage_not_provisioned' | 'org_level_disabled' | 'org_level_disabled_until' | 'out_of_credits' | 'seat_tier_level_disabled' | 'member_level_disabled' | 'seat_tier_zero_credit_limit' | 'group_zero_credit_limit' | 'member_zero_credit_limit' | 'org_service_level_disabled' | 'no_limits_configured' | 'fetch_error' | 'unknown';
     isUsingOverage?: boolean;
+    overageInUse?: boolean;
     surpassedThreshold?: number;
 };
 
@@ -4307,6 +4610,10 @@ export declare interface Settings {
     skillOverrides?: {
         [k: string]: 'on' | 'name-only' | 'user-invocable-only' | 'off';
     };
+    /**
+     * Disable the skills and workflows that ship with Claude Code: bundled skills and workflows are removed entirely; built-in slash commands stay typable but are hidden from the model. Plugins, .claude/skills/, and .claude/commands/ are unaffected. Equivalent to CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1.
+     */
+    disableBundledSkills?: boolean;
     /**
      * Enterprise allowlist of MCP servers that can be used. Applies to all scopes including enterprise servers from managed-mcp.json. If undefined, all servers are allowed. If empty array, no servers are allowed. Denylist takes precedence - if a server is on both lists, it is denied.
      */
@@ -5237,7 +5544,7 @@ export declare interface Settings {
         };
     })[];
     /**
-     * Marketplace names whose plugins may surface as contextual install suggestions (relevance-based tips), in addition to the official marketplace. Only honored when set in managed settings (policy scope); the key is ignored in user, project, and local settings. A name only takes effect when the marketplace is registered on the machine AND its registered source is also declared in managed settings, either as the extraKnownMarketplaces entry for that name or as an entry of strictKnownMarketplaces. A marketplace registered from a different source under an allowlisted name is ignored.
+     * Marketplace names whose plugins may surface as contextual install suggestions (relevance-based tips). No marketplace-declared suggestions surface without this allowlist; the built-in first-party frontend-design tip is unaffected. Only honored when set in managed settings (policy scope); the key is ignored in user, project, and local settings. A name only takes effect when the marketplace is registered on the machine AND its registered source is also declared in managed settings, either as the extraKnownMarketplaces entry for that name or as an entry of strictKnownMarketplaces. A marketplace registered from a different source under an allowlisted name is ignored. The official marketplace is exempt from the source requirement: allowlisting its name alone suffices, since that name can only register from the official Anthropic source.
      */
     pluginSuggestionMarketplaces?: string[];
     /**
@@ -5466,11 +5773,11 @@ export declare interface Settings {
         };
     };
     /**
-     * Remote session configuration
+     * Cloud session configuration
      */
     remote?: {
         /**
-         * Default environment ID to use for remote sessions
+         * Default environment ID to use for cloud sessions
          */
         defaultEnvironmentId?: string;
     };
