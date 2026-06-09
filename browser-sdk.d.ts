@@ -24,9 +24,25 @@ export type WebSocketOptions = {
     headers?: Record<string, string>;
     authMessage?: AuthMessage;
 };
-export type BrowserQueryOptions = {
+export type SSEOptions = {
+    /** SSE read endpoint, e.g. `…/v1/code/sessions/{id}/events/stream`. */
+    streamUrl: string;
+    /** POST write endpoint, e.g. `…/v1/code/sessions/{id}/events`. */
+    sendUrl: string;
+    /**
+     * The CCR session ID — required to build the `AddClientEventFromClient`
+     * request body that `sendUrl` expects.
+     */
+    sessionId: string;
+    /**
+     * Headers sent on both the SSE GET and every POST. Set `Authorization` and
+     * `anthropic-client-platform` here — the SDK cannot determine the host
+     * surface (web / iOS / Android / desktop) itself.
+     */
+    headers?: Record<string, string>;
+};
+type BrowserQueryOptionsBase = {
     prompt: AsyncIterable<SDKUserMessage>;
-    websocket: WebSocketOptions;
     abortController?: AbortController;
     canUseTool?: CanUseTool;
     hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>>;
@@ -36,7 +52,20 @@ export type BrowserQueryOptions = {
     onUserDialog?: OnUserDialog;
 };
 /**
- * Create a Claude Code query using WebSocket transport in the browser.
+ * Exactly one of `websocket` | `sse` must be provided. `sse` is the v1alpha2
+ * path and is preferred for new integrations; `websocket` remains for
+ * existing callers during the migration.
+ */
+export type BrowserQueryOptions = BrowserQueryOptionsBase & ({
+    websocket: WebSocketOptions;
+    sse?: never;
+} | {
+    sse: SSEOptions;
+    websocket?: never;
+});
+/**
+ * Create a Claude Code query in the browser over either SSE (preferred) or
+ * WebSocket.
  *
  * @example
  * ```typescript
@@ -44,7 +73,11 @@ export type BrowserQueryOptions = {
  *
  * const messages = query({
  *   prompt: messageStream,
- *   websocket: { url: 'wss://api.example.com/claude' },
+ *   sse: {
+ *     streamUrl: 'https://api.example.com/v1/code/sessions/ID/events/stream',
+ *     sendUrl: 'https://api.example.com/v1/code/sessions/ID/events',
+ *     headers: { Authorization: `Bearer ${token}` },
+ *   },
  * })
  * for await (const message of messages) {
  *   console.log(message)
