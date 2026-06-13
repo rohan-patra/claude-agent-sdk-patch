@@ -27,6 +27,7 @@ export type ToolInputSchemas =
   | WebFetchInput
   | WebSearchInput
   | AskUserQuestionInput
+  | ProjectsInput
   | EnterPlanModeInput
   | TaskCreateInput
   | TaskGetInput
@@ -39,7 +40,9 @@ export type ToolInputSchemas =
   | CronListInput
   | ScheduleWakeupInput
   | RemoteTriggerInput
+  | ShowOnboardingRolePickerInput
   | MonitorInput
+  | ArtifactInput
   | PushNotificationInput
   | EnterWorktreeInput
   | ExitWorktreeInput
@@ -68,7 +71,9 @@ export type ToolOutputSchemas =
   | TaskGetOutput
   | TaskUpdateOutput
   | TaskListOutput
+  | ArtifactOutput
   | RemoteTriggerOutput
+  | ShowOnboardingRolePickerOutput
   | ScheduleWakeupOutput
   | MonitorOutput
   | EnterPlanModeOutput
@@ -77,7 +82,8 @@ export type ToolOutputSchemas =
   | CronCreateOutput
   | CronDeleteOutput
   | CronListOutput
-  | PushNotificationOutput;
+  | PushNotificationOutput
+  | ProjectsOutput;
 export type AgentOutput =
   | {
       agentId: string;
@@ -86,6 +92,7 @@ export type AgentOutput =
         type: "text";
         text: string;
       }[];
+      resolvedModel?: string;
       totalToolUseCount: number;
       totalDurationMs: number;
       totalTokens: number;
@@ -126,6 +133,10 @@ export type AgentOutput =
        * The description of the task
        */
       description: string;
+      /**
+       * Model the spawn resolved (may differ from the requested one)
+       */
+      resolvedModel?: string;
       /**
        * The prompt for the agent
        */
@@ -301,6 +312,76 @@ export type McpOutput =
   | {
       [k: string]: unknown;
     };
+export type ProjectsOutput =
+  | {
+      method: "project_info";
+      notice?: string;
+      name: string;
+      description: string;
+      instructions: string;
+      docs: {
+        path: string;
+        created_at: string | null;
+      }[];
+      files?: {
+        path: string;
+        file_kind: string;
+        created_at: string | null;
+      }[];
+      sync_sources?: {
+        type: string | null;
+        config: {
+          [k: string]: unknown;
+        };
+      }[];
+      knowledge: {
+        knowledge_size: number;
+        max_knowledge_size: number;
+        search_threshold: number | null;
+        rag_active: boolean;
+        remaining_budget: number | null;
+      };
+    }
+  | {
+      method: "project_read";
+      notice?: string;
+      path: string;
+      file_kind?: string;
+      content?: string;
+      local_file?: string;
+      created_at: string | null;
+    }
+  | {
+      method: "project_search";
+      notice?: string;
+      rag: boolean;
+      hits?: {
+        name?: string;
+        doc_uuid?: string;
+        text?: string;
+      }[];
+      docs?: string[];
+    }
+  | {
+      method: "project_write";
+      notice?: string;
+      path: string;
+      doc_uuid: string;
+      replaced: boolean;
+      knowledge: {
+        knowledge_size: number;
+        max_knowledge_size: number;
+        search_threshold: number | null;
+        rag_active: boolean;
+        remaining_budget: number | null;
+      };
+    }
+  | {
+      method: "project_delete";
+      notice?: string;
+      path: string;
+      deleted: boolean;
+    };
 
 export interface AgentInput {
   /**
@@ -316,7 +397,7 @@ export interface AgentInput {
    */
   subagent_type?: string;
   /**
-   * Optional model override for this agent. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model, or inherits from the parent.
+   * Optional model override for this agent. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model, or inherits from the parent. Ignored for subagent_type: "fork" — forks always inherit the parent model.
    */
   model?: "sonnet" | "opus" | "haiku" | "fable";
   /**
@@ -2182,6 +2263,33 @@ export interface AskUserQuestionInput {
     source?: string;
   };
 }
+export interface ProjectsInput {
+  method: "project_info" | "project_read" | "project_search" | "project_write" | "project_delete";
+  /**
+   * project_read/project_write/project_delete: doc path. project_write: an existing path is replaced in place; a new bare filename (no "/") is namespaced to "claude/<name>".
+   */
+  path?: string;
+  /**
+   * project_write: inline doc text. Mutually exclusive with local_path. Use local_path for anything you have on disk.
+   */
+  content?: string;
+  /**
+   * project_write: a file inside the working directory to upload. The tool reads, encodes, and uploads directly — contents never enter your context. Mutually exclusive with content.
+   */
+  local_path?: string;
+  /**
+   * project_write: bypass the chat-injection budget guard. Set only when the write is genuinely worth degrading chat to retrieval mode for everyone in the project.
+   */
+  force?: boolean;
+  /**
+   * project_search: knowledge-base query
+   */
+  query?: string;
+  /**
+   * project_search: number of hits (default 5)
+   */
+  n?: number;
+}
 export interface EnterPlanModeInput {}
 export interface TaskCreateInput {
   /**
@@ -2348,6 +2456,7 @@ export interface RemoteTriggerInput {
     [k: string]: unknown;
   };
 }
+export interface ShowOnboardingRolePickerInput {}
 export interface MonitorInput {
   /**
    * Short human-readable description of what you are monitoring (shown in notifications).
@@ -2365,6 +2474,24 @@ export interface MonitorInput {
    * Shell command or script. Each stdout line is an event; exit ends the watch.
    */
   command: string;
+}
+export interface ArtifactInput {
+  /**
+   * Path to an .html or .md file to render. Use a short, distinctive basename — it is the fallback title if the HTML has no <title>.
+   */
+  file_path: string;
+  /**
+   * Browser-tab icon: one or two emoji (e.g. "📊"). No markup. Keep stable across redeploys; change only on a hard topic pivot.
+   */
+  favicon: string;
+  /**
+   * Short human-readable name for this version (e.g. "fixed-background"). Shown in the version picker instead of the raw version id.
+   */
+  label?: string;
+  /**
+   * Existing artifact URL to redeploy to. Pass when the user gives you a URL for an artifact not published in this session; omit for new artifacts or same-session redeploys. Must be an artifact the user owns.
+   */
+  url?: string;
 }
 export interface PushNotificationInput {
   /**
@@ -2711,6 +2838,10 @@ export interface ReadMcpResourceOutput {
      */
     blobSavedTo?: string;
   }[];
+  /**
+   * Human-readable error when the server could not read the resource
+   */
+  error?: string;
 }
 export interface TodoWriteOutput {
   /**
@@ -2755,6 +2886,10 @@ export interface WebFetchOutput {
    * The URL that was fetched
    */
   url: string;
+  artifactRead?: {
+    slug: string;
+    ver: string;
+  };
 }
 export interface WebSearchOutput {
   /**
@@ -3028,10 +3163,21 @@ export interface TaskListOutput {
     blockedBy: string[];
   }[];
 }
+export interface ArtifactOutput {
+  url: string;
+  path: string;
+  title?: string;
+  version?: string;
+  mcpDropped?: string;
+}
 export interface RemoteTriggerOutput {
   status: number;
   json: string;
   summary?: string;
+}
+export interface ShowOnboardingRolePickerOutput {
+  role?: string;
+  dismissed?: boolean;
 }
 export interface ScheduleWakeupOutput {
   /**
