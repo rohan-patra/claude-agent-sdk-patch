@@ -134,7 +134,12 @@ export type AttachBridgeSessionOptions = {
     onPermissionResponse?: (res: SDKControlResponse) => void;
     /** `interrupt` control_request from claude.ai. Already auto-replied-to. */
     onInterrupt?: () => void;
-    onSetModel?: (model: string | undefined) => void;
+    onSetModel?: (model: string | undefined) => {
+        ok: true;
+    } | {
+        ok: false;
+        error: string;
+    } | void;
     onSetMaxThinkingTokens?: (tokens: number | null) => void;
     /**
      * `set_permission_mode` from claude.ai. Return an error verdict to send
@@ -150,8 +155,9 @@ export type AttachBridgeSessionOptions = {
     };
     /**
      * Transport died permanently. 401 = JWT expired (re-attach with fresh
-     * secret), 4090 = epoch superseded (409, newer worker registered),
-     * 4091 = CCRClient init failed, 403/404 = permanent SSE HTTP rejection.
+     * secret), 4090 = epoch superseded (no longer the active worker),
+     * 4091 = CCRClient init failed, 4092 = codeless close (defensive
+     * fallback — cause unknown), 403/404 = permanent SSE HTTP rejection.
      * Transient disconnects (503, network blips) retry indefinitely inside
      * SSETransport and do NOT fire this.
      */

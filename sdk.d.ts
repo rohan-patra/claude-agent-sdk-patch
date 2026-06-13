@@ -1105,7 +1105,11 @@ export declare type McpServerStatusConfig = McpServerConfigForProcessTransport |
  */
 export declare type McpServerToolPolicy = {
     name: string;
-    permission_policy: 'always_allow' | 'always_ask' | 'always_deny';
+    permission_policy?: 'always_allow' | 'always_ask' | 'always_deny';
+    /**
+     * Org admin's per-tool ceiling. Drives the auto-mode isOrgAskCeiling gate so an admin 'ask' cap forces a user prompt even in auto mode.
+     */
+    org_max_permission?: 'allow' | 'ask' | 'blocked';
 };
 
 /**
@@ -1746,8 +1750,10 @@ export declare type Options = {
      * Delivery semantics:
      * - At most one `prompt_suggestion` per turn; arrives after the `result` message.
      * - Consumers must keep iterating the stream after `result` to receive it.
-     * - Suppressed on the first turn, after API errors, in plan mode, and by the
-     *   `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` env var.
+     * - Suppressed on the first turn, after API errors, in plan mode, by the
+     *   `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` env var, and when the user
+     *   has `promptSuggestionEnabled: false` in settings.json (the env var wins
+     *   over the setting).
      * - Suggestions piggyback on the parent's prompt cache, making them nearly free.
      */
     promptSuggestions?: boolean;
@@ -3239,6 +3245,8 @@ export declare type SDKControlInitializeResponse = {
      */
     account: coreTypes.AccountInfo;
 
+
+
     fast_mode_state?: coreTypes.FastModeState;
 
 };
@@ -3248,6 +3256,7 @@ export declare type SDKControlInitializeResponse = {
  */
 declare type SDKControlInterruptRequest = {
     subtype: 'interrupt';
+
 };
 
 /**
@@ -3662,6 +3671,7 @@ export declare type SDKMessageOrigin = {
     kind: 'peer';
     from: string;
     name?: string;
+
 } | {
     kind: 'task-notification';
 } | {
@@ -3784,6 +3794,10 @@ export declare type SdkPluginConfig = {
      * Absolute or relative path to the plugin directory
      */
     path: string;
+    /**
+     * When true, the engine loads skills/hooks/agents/commands from this plugin but does NOT read its .mcp.json or manifest mcpServers. Use when the SDK host owns this plugin's MCP connections.
+     */
+    skipMcpDiscovery?: boolean;
 };
 
 /**
@@ -4136,6 +4150,7 @@ export declare type SDKUserMessage = {
     priority?: 'now' | 'next' | 'later';
     origin?: SDKMessageOrigin;
 
+
     /**
      * When false, the message is appended to the transcript without triggering an assistant turn. It will be merged into the next user message that does query.
      */
@@ -4176,6 +4191,7 @@ export declare type SDKUserMessageReplay = {
     tool_use_result?: unknown;
     priority?: 'now' | 'next' | 'later';
     origin?: SDKMessageOrigin;
+
 
     /**
      * When false, the message is appended to the transcript without triggering an assistant turn. It will be merged into the next user message that does query.
@@ -4456,7 +4472,7 @@ export declare interface Settings {
     /**
      * JSON Schema reference for Claude Code settings
      */
-    $schema?: 'https://json.schemastore.org/claude-code-settings.json';
+    $schema?: string;
     /**
      * Path to a script that outputs authentication values
      */
@@ -4586,6 +4602,10 @@ export declare interface Settings {
      * Allowlist of models that users can select. Accepts family aliases ("opus" allows any opus version), version prefixes ("opus-4-5" allows only that version), and full model IDs. If undefined, all models are available. If empty array, only the default model is available. Typically set in managed settings by enterprise administrators.
      */
     availableModels?: string[];
+    /**
+     * When true and availableModels is a non-empty array, the Default model selection is also constrained: if the default model for the user tier is not in availableModels, Default resolves to the first allowed availableModels entry instead. Has no effect when availableModels is unset or an empty array. Typically set in managed settings by enterprise administrators.
+     */
+    enforceAvailableModels?: boolean;
     /**
      * Override mapping from Anthropic model ID (e.g. "claude-opus-4-6") to provider-specific model ID (e.g. a Bedrock inference profile ARN). Typically set in managed settings by enterprise administrators.
      */
@@ -4880,6 +4900,10 @@ export declare interface Settings {
      */
     disableWorkflows?: boolean;
     /**
+     * Disable the Artifact tool (also via CLAUDE_CODE_DISABLE_ARTIFACT).
+     */
+    disableArtifact?: boolean;
+    /**
      * Enable or disable the Workflows feature for this user. Unset = default by plan once the feature is available.
      */
     enableWorkflows?: boolean;
@@ -4940,9 +4964,37 @@ export declare interface Settings {
         hideVimModeIndicator?: boolean;
     };
     /**
-     * URL template for PR links in the footer badge and inline messages. Placeholders: {host} {owner} {repo} {number} {url}. Example: "https://reviews.example.com/{owner}/{repo}/pull/{number}"
+     * URL template for PR links in the footer link badges and inline messages. The detected git PR is rendered as the first footer-link badge. Placeholders: {host} {owner} {repo} {number} {url}. Example: "https://reviews.example.com/{owner}/{repo}/pull/{number}"
      */
     prUrlTemplate?: string;
+    /**
+     * Extra clickable footer badges that appear when a regex matches turn output (tool results and assistant responses). Read from user, flag, and managed settings only; ignored in project .claude/settings.json and local .claude/settings.local.json. At most 5 badges render; the oldest is displaced by newer matches and /clear removes them. Use to surface IDs printed by project CLIs as session links.
+     */
+    footerLinksRegexes?: ({
+        /**
+         * Config variant. This client understands "regex": matches turn output and builds a URL from named capture groups. Entries with other variants are preserved but skipped at runtime.
+         */
+        type: 'regex';
+        /**
+         * Regex matched against turn output (tool results and assistant text)
+         */
+        pattern: string;
+        /**
+         * Link target. {name} placeholders are filled from named regex capture groups, e.g. (?<id>...) -> {id}. Values are URL-encoded; the origin must be literal in the template. The scheme must be https, http, or a recognized editor or workspace deep-link scheme: vscode, vscode-insiders, cursor, windsurf, zed, jetbrains, idea, slack, linear, notion, figma.
+         */
+        url: string;
+        /**
+         * Badge text. {name} placeholders filled from named capture groups; defaults to the full match.
+         */
+        label?: string;
+        [k: string]: unknown;
+    } | {
+        /**
+         * Config variant discriminator for entries this client does not understand; the entry is preserved as-is and skipped at runtime.
+         */
+        type: string;
+        [k: string]: unknown;
+    })[];
     /**
      * Custom per-subagent status line shown in the agent panel; receives row context as JSON on stdin
      */
@@ -5835,6 +5887,7 @@ export declare interface Settings {
      */
     prefersReducedMotion?: boolean;
 
+
     /**
      * Enable auto-memory for this project. When false, Claude will not read from or write to the auto-memory directory.
      */
@@ -5929,6 +5982,10 @@ export declare interface Settings {
      * Auto-scroll the conversation view to bottom (fullscreen mode only)
      */
     autoScrollEnabled?: boolean;
+    /**
+     * Ramp mouse-wheel scroll speed during fast scrolls (fullscreen mode only)
+     */
+    wheelScrollAccelerationEnabled?: boolean;
     /**
      * Snapshot files before edits so /rewind can restore them
      */
