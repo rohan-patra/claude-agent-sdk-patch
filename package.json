@@ -1,6 +1,6 @@
 {
   "name": "@anthropic-ai/claude-agent-sdk",
-  "version": "0.3.177",
+  "version": "0.3.181",
   "main": "sdk.mjs",
   "types": "sdk.d.ts",
   "exports": {
@@ -19,10 +19,6 @@
     "./bridge": {
       "types": "./bridge.d.ts",
       "default": "./bridge.mjs"
-    },
-    "./assistant": {
-      "types": "./assistant.d.ts",
-      "default": "./assistant.mjs"
     },
     "./sdk-tools": {
       "types": "./sdk-tools.d.ts"
@@ -61,14 +57,14 @@
     "zod": "^4.0.0"
   },
   "optionalDependencies": {
-    "@anthropic-ai/claude-agent-sdk-linux-x64": "0.3.177",
-    "@anthropic-ai/claude-agent-sdk-linux-arm64": "0.3.177",
-    "@anthropic-ai/claude-agent-sdk-linux-x64-musl": "0.3.177",
-    "@anthropic-ai/claude-agent-sdk-linux-arm64-musl": "0.3.177",
-    "@anthropic-ai/claude-agent-sdk-darwin-x64": "0.3.177",
-    "@anthropic-ai/claude-agent-sdk-darwin-arm64": "0.3.177",
-    "@anthropic-ai/claude-agent-sdk-win32-x64": "0.3.177",
-    "@anthropic-ai/claude-agent-sdk-win32-arm64": "0.3.177"
+    "@anthropic-ai/claude-agent-sdk-linux-x64": "0.3.181",
+    "@anthropic-ai/claude-agent-sdk-linux-arm64": "0.3.181",
+    "@anthropic-ai/claude-agent-sdk-linux-x64-musl": "0.3.181",
+    "@anthropic-ai/claude-agent-sdk-linux-arm64-musl": "0.3.181",
+    "@anthropic-ai/claude-agent-sdk-darwin-x64": "0.3.181",
+    "@anthropic-ai/claude-agent-sdk-darwin-arm64": "0.3.181",
+    "@anthropic-ai/claude-agent-sdk-win32-x64": "0.3.181",
+    "@anthropic-ai/claude-agent-sdk-win32-arm64": "0.3.181"
   },
   "files": [
     "sdk.mjs",
@@ -77,8 +73,6 @@
     "agentSdkTypes.d.ts",
     "bridge.mjs",
     "bridge.d.ts",
-    "assistant.mjs",
-    "assistant.d.ts",
     "browser-sdk.js",
     "browser-sdk.d.ts",
     "extractFromBunfs.js",
@@ -86,5 +80,5 @@
     "manifest.json",
     "manifest.zst.json"
   ],
-  "claudeCodeVersion": "2.1.177"
+  "claudeCodeVersion": "2.1.181"
 }

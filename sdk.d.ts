@@ -45,7 +45,7 @@ export declare type AgentDefinition = {
      */
     tools?: string[];
     /**
-     * Array of tool names to explicitly disallow for this agent
+     * Array of tool names to explicitly disallow for this agent. MCP server-level specs (mcp__server, mcp__server__*, mcp__*) remove every tool from the named server (or all MCP tools).
      */
     disallowedTools?: string[];
     /**
@@ -240,56 +240,6 @@ export declare type ConfigChangeHookInput = BaseHookInput & {
  */
 export declare type ConfigScope = 'local' | 'user' | 'project';
 
-/**
- * Structured failure from connectRemoteControl.
- * @alpha
- */
-export declare type ConnectRemoteControlError = {
-    kind: 'conflict' | 'auth' | 'network' | 'unknown';
-    detail: string;
-};
-
-/**
- * Options for connectRemoteControl.
- * @alpha
- */
-export declare type ConnectRemoteControlOptions = {
-    dir: string;
-    /** Override directory sent to backend for env registration. */
-    registrationDir?: string;
-    name?: string;
-    workerType?: string;
-    branch?: string;
-    gitRepoUrl?: string | null;
-    getAccessToken: () => string | undefined;
-    baseUrl: string;
-    orgUUID: string;
-    model: string;
-    /** Reuse env+session across restarts (reads bridge-pointer.json). */
-    perpetual?: boolean;
-    /** SSE high-water mark so reconnect sends from_sequence_num. */
-    initialSSESequenceNum?: number;
-    /** Called on 401; return true after refreshing token to retry. */
-    onAuth401?: (staleAccessToken: string) => Promise<boolean>;
-    /** Called on 409 conflict; return 'takeover' to deregister + retry. */
-    onConflict?: (detail: {
-        machineName: string;
-        message: string;
-    }) => Promise<'takeover' | 'abort'>;
-};
-
-/**
- * Discriminated result from connectRemoteControl.
- * @alpha
- */
-export declare type ConnectRemoteControlResult = {
-    ok: true;
-    handle: RemoteControlHandle;
-} | {
-    ok: false;
-    error: ConnectRemoteControlError;
-};
-
 declare type ControlErrorResponse = {
     subtype: 'error';
     request_id: string;
@@ -408,6 +358,7 @@ declare namespace coreTypes {
         SDKHookProgressMessage,
         SDKHookResponseMessage,
         SDKHookStartedMessage,
+        SDKInformationalMessage,
         SDKLocalCommandOutputMessage,
         SDKMemoryRecallMessage,
         SDKMessageOrigin,
@@ -440,6 +391,7 @@ declare namespace coreTypes {
         SDKToolUseSummaryMessage,
         SDKUserMessageReplay,
         SDKUserMessage,
+        SDKWorkerShuttingDownMessage,
         SdkBeta,
         SdkPluginConfig,
         SessionCronSummary,
@@ -863,15 +815,6 @@ export declare type ImportSessionToStoreOptions = {
      * `append()` is called multiple times per session. Default: 500.
      */
     batchSize?: number;
-};
-
-/**
- * A user message typed on claude.ai, extracted from the bridge WS.
- * @alpha
- */
-export declare type InboundPrompt = {
-    content: string | unknown[];
-    uuid?: string;
 };
 
 export declare type InferShape<T extends AnyZodRawShape> = {
@@ -1742,7 +1685,6 @@ export declare type Options = {
 
 
 
-
     /**
      * Enable prompt suggestions. When true, the agent emits a `prompt_suggestion`
      * message after each turn with a predicted next user prompt.
@@ -2277,8 +2219,14 @@ export declare interface Query extends AsyncGenerator<SDKMessage, void> {
      * `thinking: { type: 'enabled', budgetTokens: N }`.
      *
      * @param maxThinkingTokens - Maximum tokens for thinking, or null to clear the limit
+     * @param thinkingDisplay - Optional thinking display mode for the rest of
+     * the session: a value replaces the session display mode, `null` clears it
+     * back to the API default, and when omitted the display mode from session
+     * start (`thinking.display` / `--thinking-display`) is kept — note a
+     * session started with thinking disabled has none, so re-enabling thinking
+     * without this param yields the API's default display.
      */
-    setMaxThinkingTokens(maxThinkingTokens: number | null): Promise<void>;
+    setMaxThinkingTokens(maxThinkingTokens: number | null, thinkingDisplay?: 'summarized' | 'omitted' | null): Promise<void>;
     /**
      * Merge the provided settings into the flag settings layer, dynamically
      * updating the active configuration. Equivalent to the inline `settings`
@@ -2671,6 +2619,7 @@ declare const SandboxSettingsSchema: () => z.ZodObject<{
     ignoreViolations: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodArray<z.ZodString>>>;
     enableWeakerNestedSandbox: z.ZodOptional<z.ZodBoolean>;
     enableWeakerNetworkIsolation: z.ZodOptional<z.ZodBoolean>;
+    allowAppleEvents: z.ZodOptional<z.ZodBoolean>;
     excludedCommands: z.ZodOptional<z.ZodArray<z.ZodString>>;
     ripgrep: z.ZodOptional<z.ZodObject<{
         command: z.ZodString;
@@ -2715,6 +2664,7 @@ export declare type SDKAssistantMessage = {
      * Description of the subagent task that produced this message.
      */
     task_description?: string;
+
 
 
 
@@ -3474,11 +3424,12 @@ declare type SDKControlSetColorRequest = {
 };
 
 /**
- * Sets the maximum number of thinking tokens for extended thinking.
+ * Sets the maximum number of thinking tokens for extended thinking. thinking_display optionally sets the thinking display mode for the rest of the session: a value replaces the session display mode, null clears it back to the API default, and when omitted the display mode from session start (--thinking-display) is kept.
  */
 declare type SDKControlSetMaxThinkingTokensRequest = {
     subtype: 'set_max_thinking_tokens';
     max_thinking_tokens: number | null;
+    thinking_display?: ('summarized' | 'omitted') | null;
 };
 
 /**
@@ -3601,6 +3552,29 @@ export declare type SDKHookStartedMessage = {
 };
 
 /**
+ * Generic text banner emitted by the loop — non-error status lines, hook feedback (e.g. a UserPromptSubmit hook's block reason), slash-command output. Hosts render `content` as plaintext at the given level.
+ */
+export declare type SDKInformationalMessage = {
+    type: 'system';
+    subtype: 'informational';
+    content: string;
+    /**
+     * Render level. 'info' shows only in transcript mode; 'notice' renders in inactive gray; 'suggestion' and 'warning' are more prominent.
+     */
+    level: 'info' | 'notice' | 'suggestion' | 'warning';
+    /**
+     * Dedupes progress messages for the same tool use.
+     */
+    tool_use_id?: string;
+    /**
+     * When true, execution stops after this message (e.g. a Stop hook denied continuation).
+     */
+    prevent_continuation?: boolean;
+    uuid: UUID;
+    session_id: string;
+};
+
+/**
  * Keep-alive message to maintain WebSocket connection.
  */
 declare type SDKKeepAliveMessage = {
@@ -3657,7 +3631,7 @@ export declare type SDKMemoryRecallMessage = {
     session_id: string;
 };
 
-export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKModelRefusalFallbackMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKCommandsChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage;
+export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKModelRefusalFallbackMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKWorkerShuttingDownMessage | SDKCommandsChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage | SDKInformationalMessage;
 
 /**
  * Provenance of a user-role message (peer session, team lead, channel). Absent or `human` means keyboard input from the user.
@@ -3672,6 +3646,10 @@ export declare type SDKMessageOrigin = {
     from: string;
     name?: string;
 
+    /**
+     * Task id of the in-process background subagent that sent this message, stamped by the harness from the sending loop (never from tool input). Absent for cross-session peers.
+     */
+    senderTaskId?: string;
 } | {
     kind: 'task-notification';
 } | {
@@ -3708,11 +3686,11 @@ export declare type SDKModelRefusalFallbackMessage = {
     fallback_model: string;
     request_id: string | null;
     /**
-     * stop_details.category from the refused API response ("cyber", "bio", …). Open string — new categories ship on the wire ahead of schema updates. null when the response carried no category (normal, not an error). Absent when emitted by an older CLI.
+     * The refusal category ('cyber', 'bio', …): stop_details.category from the refused API response (client lane), or the fallback block's server-gated trigger.category (server lane). Open string — new categories ship on the wire ahead of schema updates. null when neither source carried a category (normal, not an error). Absent when emitted by an older CLI.
      */
     api_refusal_category?: string | null;
     /**
-     * stop_details.explanation from the refused API response. Unstable human prose — display only, never parse. null/absent under the same rules as api_refusal_category.
+     * stop_details.explanation from the refused API response (client lane only — the server-lane trigger carries no explanation). Unstable human prose — display only, never parse. null/absent when the response carried none, and always null on server-lane banners.
      */
     api_refusal_explanation?: string | null;
     /**
@@ -3850,6 +3828,10 @@ export declare type SDKRateLimitInfo = {
     isUsingOverage?: boolean;
     overageInUse?: boolean;
     surpassedThreshold?: number;
+
+    errorCode?: 'credits_required';
+    canUserPurchaseCredits?: boolean;
+    hasChargeableSavedPaymentMethod?: boolean;
 };
 
 export declare type SDKResultError = {
@@ -3884,6 +3866,7 @@ export declare type SDKResultSuccess = {
     time_to_request_ms?: number;
     time_to_request_from_spawn_ms?: number;
     warm_spare_claimed?: boolean;
+    time_origin_ms?: number;
     is_error: boolean;
     api_error_status?: number | null;
     num_turns: number;
@@ -4217,6 +4200,20 @@ export declare type SDKUserMessageReplay = {
     session_id: string;
     isReplay: true;
     file_attachments?: unknown[];
+};
+
+/**
+ * Emitted by the bridge on opt-in graceful worker teardown (only when the teardown caller supplied a reason), before the heartbeat stops, so remote clients can show why the worker went away instead of waiting for heartbeat timeout. Absence is NOT a dead-host signal: handoffs (/update, /teleport, respawn), auto-disable, mode transitions, and internal fatal-error paths emit nothing by design. A dead host (battery, OOM, kill -9) never reaches teardown and never sends this either. NOTE: this event lands in the durable per-session event stream — a session that is later resumed may carry historical instances mid-stream. Clients MUST treat it as a live-tail signal only (honored when no further activity follows), not a one-shot session-lifetime fact. CC-2656.
+ */
+export declare type SDKWorkerShuttingDownMessage = {
+    type: 'system';
+    subtype: 'worker_shutting_down';
+    /**
+     * Short snake_case reason set by the host CLI (not user input), e.g. 'host_exit', 'remote_control_disabled'.
+     */
+    reason: string;
+    uuid: UUID;
+    session_id: string;
 };
 
 export declare type SessionCronSummary = {
@@ -5710,6 +5707,10 @@ export declare interface Settings {
          * macOS only: Allow access to com.apple.trustd.agent in the sandbox. Needed for Go-based CLI tools (gh, gcloud, terraform, etc.) to verify TLS certificates when using httpProxyPort with a MITM proxy and custom CA. **Reduces security** — opens a potential data exfiltration vector through the trustd service. Default: false
          */
         enableWeakerNetworkIsolation?: boolean;
+        /**
+         * macOS only: Allow sandboxed commands to send Apple Events (and look up the appleeventsd Mach service). Needed for `open`, `osascript`, and browser-based auth flows that open URLs. **Removes code-execution isolation** — sandboxed commands can launch other applications unsandboxed with no user prompt, and can script running apps (e.g. Terminal) subject to the user's per-app TCC automation consent. Only honored from user, managed/policy, or CLI (--settings) settings — project settings (.claude/settings.json and .claude/settings.local.json) are ignored. Default: false
+         */
+        allowAppleEvents?: boolean;
         excludedCommands?: string[];
         /**
          * Custom ripgrep configuration for bundled ripgrep support
@@ -5974,6 +5975,7 @@ export declare interface Settings {
      * Automatically compact conversation when context fills
      */
     autoCompactEnabled?: boolean;
+
     /**
      * When safety measures flag a message, automatically switch to a different model to keep chatting. When off, your session will pause instead.
      */
@@ -6290,6 +6292,9 @@ export declare type TaskCompletedHookInput = BaseHookInput & {
     task_subject: string;
     task_description?: string;
     teammate_name?: string;
+    /**
+     * @deprecated Sessions have a single implicit team; this carries the session-derived team name and will be removed in a future release.
+     */
     team_name?: string;
 };
 
@@ -6299,12 +6304,18 @@ export declare type TaskCreatedHookInput = BaseHookInput & {
     task_subject: string;
     task_description?: string;
     teammate_name?: string;
+    /**
+     * @deprecated Sessions have a single implicit team; this carries the session-derived team name and will be removed in a future release.
+     */
     team_name?: string;
 };
 
 export declare type TeammateIdleHookInput = BaseHookInput & {
     hook_event_name: 'TeammateIdle';
     teammate_name: string;
+    /**
+     * @deprecated Sessions have a single implicit team; this carries the session-derived team name and will be removed in a future release.
+     */
     team_name: string;
 };
 
