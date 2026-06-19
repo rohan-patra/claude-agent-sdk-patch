@@ -140,7 +140,7 @@ export type AttachBridgeSessionOptions = {
         ok: false;
         error: string;
     } | void;
-    onSetMaxThinkingTokens?: (tokens: number | null) => void;
+    onSetMaxThinkingTokens?: (tokens: number | null, thinkingDisplay?: 'summarized' | 'omitted' | null) => void;
     /**
      * `set_permission_mode` from claude.ai. Return an error verdict to send
      * an error control_response (vs silently false-succeeding). Omit if

@@ -72,17 +72,24 @@ Make changes on `main` (one focused commit each, so merges stay easy).
   copy of upstream `0.3.150`. Because it edits a vendored file, expect to
   re-resolve it if upstream ever adds its own `scripts` block.
 
-### Subprocess environment normalization (`sdk.mjs`, `assistant.mjs`)
+### Subprocess environment normalization (`sdk.mjs`)
 
 When the SDK spawns the `claude` CLI it tags the child process env so the CLI
 can tell it is being driven programmatically. We strip the two tags that are
 present on *every* spawn so the child env matches an ordinary interactive
 session. This is a behavioral patch on the bundled (minified) code, so it must
 be re-applied by hand after each `git merge upstream` — the minified identifiers
-(`H`, `V6`, `G`, `XQ`, …) change between releases, so match on the surrounding
+(`H`, `V6`, `c`, `ut`, …) change between releases, so match on the surrounding
 structure, not the exact variable names.
 
-There are **four** spawn/child-env construction sites — two in each file (the
+> Up to `0.3.177` this patch also covered `assistant.mjs`, which carried a
+> second copy of these two sites (so there were four total). Upstream
+> **removed `assistant.mjs` entirely in `0.3.181`** (dropped from `exports`,
+> `files`, and `optionalDependencies`; `assistant.d.ts` gone too), so the patch
+> now lives only in `sdk.mjs`. If a future release reintroduces a second bundle
+> with its own spawn sites, patch it the same way and update this section.
+
+There are **two** spawn/child-env construction sites, both in `sdk.mjs` (the
 streaming/transport path and the one-shot `query()` path). At each one, upstream
 does roughly:
 
@@ -96,7 +103,7 @@ Rewrite each to:
 
 1. **Entrypoint** — change the assigned value from `"sdk-ts"` to `"cli"`. `cli`
    is the value a real interactive session uses (and the `default` of the
-   entrypoint→telemetry switch in `bridge.mjs`/`assistant.mjs`), so the CLI's
+   entrypoint→telemetry switch in `bridge.mjs`), so the CLI's
    User-Agent and telemetry source become indistinguishable from interactive
    use. Keep the `if(!…)` guard; only the literal changes.
 2. **Version** — replace the *assignment* with an unconditional
@@ -124,35 +131,34 @@ Intentionally **not** touched, so don't add them back as "missing":
   and the `SDKUserMessage` envelope are the actual control protocol — removing
   them breaks the SDK. They are not addressable here by design.
 
-**Re-applying after `git merge upstream`.** Conflicts in `sdk.mjs` /
-`assistant.mjs` will usually span entire minified mega-lines (a single line
-can be tens of thousands of chars), so the cleanest path is to discard the
-conflicted versions, take pristine upstream wholesale, and re-apply the four
-sites by hand:
+**Re-applying after `git merge upstream`.** The conflict in `sdk.mjs` will
+usually span entire minified mega-lines (a single line can be tens of thousands
+of chars), so the cleanest path is to discard the conflicted version, take
+pristine upstream wholesale, and re-apply the two sites by hand:
 
 ```bash
-git checkout --theirs sdk.mjs assistant.mjs
+git checkout --theirs sdk.mjs
 ```
 
 Then apply each rewrite via `perl -i -pe` (or `sed`) through `Bash` — **not**
 the `Edit` tool. On at least some setups a `PostToolUse:Edit` hook auto-formats
 `.mjs` files, which expands the bundled code from ~200 lines to >100k lines and
 obliterates the diff against upstream. Locate the sites first
-(`grep -on 'CLAUDE_CODE_ENTRYPOINT="sdk-ts"' sdk.mjs assistant.mjs` — expect 2
-per file), then craft the substitution against the surrounding bytes (the
-env-var identifier — `H`, `V6`, `G`, `NQ`, … — is different each release). For
-example, a streaming-path site in `sdk.mjs`:
+(`grep -on 'CLAUDE_CODE_ENTRYPOINT="sdk-ts"' sdk.mjs` — expect 2), then craft
+the substitution against the surrounding bytes (the env-var identifier — `H`,
+`V6`, `c`, `ut`, … — is different each release). For example, a streaming-path
+site in `sdk.mjs`:
 
 ```bash
 perl -i -pe 's|if\(!H\.CLAUDE_CODE_ENTRYPOINT\)H\.CLAUDE_CODE_ENTRYPOINT="sdk-ts";if\(delete H\.NODE_OPTIONS,|if(!H.CLAUDE_CODE_ENTRYPOINT)H.CLAUDE_CODE_ENTRYPOINT="cli";delete H.CLAUDE_AGENT_SDK_VERSION;if(delete H.NODE_OPTIONS,|g' sdk.mjs
 ```
 
-Verify after re-applying: `node --check sdk.mjs && node --check assistant.mjs`,
-then confirm no `CLAUDE_CODE_ENTRYPOINT="sdk-ts"` assignments remain (the
-`case"sdk-ts"` in the telemetry switch should stay) and that there are two
-`delete …CLAUDE_AGENT_SDK_VERSION` sites per file. The final
-`git diff --stat upstream` should show only `sdk.mjs` (4 lines), `assistant.mjs`
-(4 lines), `package.json` (~3 lines), and `CLAUDE.md` — nothing else.
+Verify after re-applying: `node --check sdk.mjs`, then confirm no
+`CLAUDE_CODE_ENTRYPOINT="sdk-ts"` assignments remain in `sdk.mjs` (the
+`case"sdk-ts"` in the `bridge.mjs` telemetry switch should stay) and that there
+are two `delete …CLAUDE_AGENT_SDK_VERSION` sites in `sdk.mjs`. The final
+`git diff --stat upstream` should show only `sdk.mjs` (4 lines),
+`package.json` (~3 lines), and `CLAUDE.md` — nothing else.
 
 The package name is left as `@anthropic-ai/claude-agent-sdk` so the fork is a
 drop-in replacement. Note `optionalDependencies` pin the native
