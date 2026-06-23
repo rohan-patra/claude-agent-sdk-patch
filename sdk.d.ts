@@ -3374,7 +3374,7 @@ export declare type SDKControlRequest = {
     request: SDKControlRequestInner;
 };
 
-declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlGetUsageRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlRegisterRepoRootRequest | SDKControlReloadPluginsRequest | SDKControlReloadSkillsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlChannelEnableRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlClaudeOAuthWaitForCompletionRequest | SDKControlRemoteControlRequest | SDKControlGenerateSessionTitleRequest | SDKControlSideQuestionRequest | SDKControlUltrareviewLaunchRequest | SDKControlStageFileRequest | SDKControlMessageRatedRequest | SDKControlOAuthTokenRefreshRequest | SDKControlHostAuthTokenRefreshRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest | SDKControlSubmitFeedbackRequest;
+declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlGetUsageRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlRegisterRepoRootRequest | SDKControlReloadPluginsRequest | SDKControlReloadSkillsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlSetMcpPermissionModeOverrideRequest | SDKControlRewindConversationRequest | SDKControlChannelEnableRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlClaudeOAuthWaitForCompletionRequest | SDKControlRemoteControlRequest | SDKControlGenerateSessionTitleRequest | SDKControlSideQuestionRequest | SDKControlUltrareviewLaunchRequest | SDKControlStageFileRequest | SDKControlMessageRatedRequest | SDKControlOAuthTokenRefreshRequest | SDKControlHostAuthTokenRefreshRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest | SDKControlSubmitFeedbackRequest;
 
 /**
  * Requests the SDK consumer to render a tool-driven blocking dialog and return the user choice. Used by tools that previously rendered Ink JSX via setToolJSX with an onDone callback.
@@ -3828,6 +3828,7 @@ export declare type SDKRateLimitInfo = {
     isUsingOverage?: boolean;
     overageInUse?: boolean;
     surpassedThreshold?: number;
+
 
     errorCode?: 'credits_required';
     canUserPurchaseCredits?: boolean;
@@ -4548,6 +4549,10 @@ export declare interface Settings {
          * Attribution text for pull request descriptions. Empty string hides attribution.
          */
         pr?: string;
+        /**
+         * Whether to append the claude.ai session link to commits and PRs created from web or Remote Control sessions (default: true). Set to false to omit the Claude-Session trailer and PR-body link.
+         */
+        sessionUrl?: boolean;
     };
     /**
      * Deprecated: Use attribution instead. Whether to include Claude's co-authored by attribution in commits and PRs (defaults to true)
@@ -4621,6 +4626,10 @@ export declare interface Settings {
      * List of rejected MCP servers from .mcp.json
      */
     disabledMcpjsonServers?: string[];
+    /**
+     * When true in any settings source, claude.ai MCP cloud connectors are not auto-fetched or connected. Only gates auto-fetched connectors — a claudeai-proxy server passed explicitly (e.g. via --mcp-config or the SDK mcpServers option) still follows the normal MCP config trust flow. Any-source-true wins: a project can opt out, but a project-level false cannot override a user-level true.
+     */
+    disableClaudeAiConnectors?: boolean;
     /**
      * Per-skill listing overrides keyed by skill name. "name-only" lists the skill without its description; "user-invocable-only" hides it from the model but keeps /name; "off" hides it from both. Absent = on.
      */
@@ -4916,6 +4925,10 @@ export declare interface Settings {
      * Default shell for input-box ! commands. Defaults to 'bash' on all platforms (no Windows auto-flip).
      */
     defaultShell?: 'bash' | 'powershell';
+    /**
+     * Whether Claude responds after an input-box ! bash command runs. Set to false to add the command output to context without a response. Default: true.
+     */
+    respondToBashCommands?: boolean;
     /**
      * When true (and set in managed settings), only hooks from managed settings run. User, project, and local hooks are ignored.
      */
@@ -6009,9 +6022,9 @@ export declare interface Settings {
      */
     todoFeatureEnabled?: boolean;
     /**
-     * How spawned teammates execute (tmux, in-process, auto)
+     * How spawned teammates execute (tmux, iterm2, in-process, auto)
      */
-    teammateMode?: 'auto' | 'tmux' | 'in-process';
+    teammateMode?: 'auto' | 'tmux' | 'iterm2' | 'in-process';
     /**
      * Start Remote Control bridge automatically each session
      */
@@ -6322,7 +6335,7 @@ export declare type TeammateIdleHookInput = BaseHookInput & {
 /**
  * Why the query loop terminated. Unset when the loop was bypassed (local slash command) or interrupted externally (budget/retry limits checked between yields).
  */
-export declare type TerminalReason = 'blocking_limit' | 'rapid_refill_breaker' | 'prompt_too_long' | 'image_error' | 'model_error' | 'aborted_streaming' | 'aborted_tools' | 'stop_hook_prevented' | 'hook_stopped' | 'tool_deferred' | 'max_turns' | 'completed';
+export declare type TerminalReason = 'blocking_limit' | 'rapid_refill_breaker' | 'prompt_too_long' | 'image_error' | 'model_error' | 'aborted_streaming' | 'aborted_tools' | 'stop_hook_prevented' | 'hook_stopped' | 'tool_deferred' | 'max_turns' | 'background_requested' | 'completed';
 
 /**
  * Claude decides when and how much to think (Opus 4.6+).
@@ -6407,6 +6420,14 @@ export declare interface Transport {
      * End the input stream
      */
     endInput(): void;
+    /**
+     * Await the underlying subprocess's exit. Only meaningful for
+     * subprocess-backed transports (ProcessTransport); WebSocket / SSE /
+     * in-process transports leave this undefined. Query.performCleanup()
+     * awaits it (bounded) so .return() / asyncDispose don't resolve while
+     * the child is still draining the stdin EOF that close() just sent.
+     */
+    waitForExit?(): Promise<void>;
     /**
      * Optional Disposable support. All built-in transports implement this
      * (delegating to close()), so `using transport = new ProcessTransport(...)`
