@@ -37,6 +37,13 @@ export type BridgeSessionHandle = {
      * replaying full history.
      */
     getSequenceNum(): number;
+    /**
+     * Worker epoch the current transport is writing as. Callers that
+     * reconnect for a token refresh (not a cold re-attach) pass this back
+     * via `reconnectTransport({epoch})` so the handle reuses the epoch
+     * instead of calling registerWorker again.
+     */
+    getEpoch(): number | undefined;
     /** True once the write path (CCRClient initialize) is ready. */
     isConnected(): boolean;
     /** Write a single SDKMessage. `session_id` is injected automatically. */
@@ -64,7 +71,7 @@ export type BridgeSessionHandle = {
     reconnectTransport(opts: {
         ingressToken: string;
         apiBaseUrl: string;
-        /** Omit to call registerWorker; provide if the server already bumped. */
+        /** Omit to reuse the current transport's epoch (token-refresh reconnect); provide to override. */
         epoch?: number;
     }): Promise<void>;
     /**
