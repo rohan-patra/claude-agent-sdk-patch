@@ -157,6 +157,10 @@ export declare type BaseHookInput = {
     session_id: string;
     transcript_path: string;
     cwd: string;
+    /**
+     * UUID correlating a user prompt with all subsequent events until the next prompt. Same value emitted on OpenTelemetry events as the `prompt.id` attribute, so hook output can be joined to OTel events at prompt grain. Absent until the first user input of the process lifetime.
+     */
+    prompt_id?: string;
     permission_mode?: string;
     /**
      * Subagent identifier. Present only when the hook fires from within a subagent (e.g., a tool called by an AgentTool worker). Absent for the main thread, even in --agent sessions. Use this field (not agent_type) to distinguish subagent calls from main-thread calls.
@@ -270,6 +274,7 @@ declare type ControlResponse = {
 
 declare namespace coreTypes {
     export {
+        SandboxCredentialsConfig,
         SandboxFilesystemConfig,
         SandboxIgnoreViolations,
         SandboxNetworkConfig,
@@ -365,6 +370,7 @@ declare namespace coreTypes {
         SDKMessage,
         SDKMirrorErrorMessage,
         SDKModelRefusalFallbackMessage,
+        SDKModelRefusalNoFallbackMessage,
         SDKNotificationMessage,
         SDKPartialAssistantMessage,
         SDKPermissionDenial,
@@ -490,7 +496,7 @@ export declare function deleteSession(_sessionId: string, _options?: SessionMuta
  * - `'low'` — Minimal thinking, fastest responses
  * - `'medium'` — Moderate thinking
  * - `'high'` — Deep reasoning (default)
- * - `'xhigh'` — Deeper than high (Fable 5, Opus 4.7+; falls back to `'high'` elsewhere)
+ * - `'xhigh'` — Deeper than high (Fable 5, Opus 4.7+, Sonnet 5; falls back to `'high'` elsewhere)
  * - `'max'` — Maximum effort (select models only)
  */
 export declare type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -916,6 +922,17 @@ export declare type ListSessionsOptions = {
      */
     includeWorktrees?: boolean;
     /**
+     * Include programmatic/headless sessions (SDK entrypoints `sdk-cli`,
+     * `sdk-ts`, `sdk-py`) and daemon/daemon-worker sessions. Defaults to
+     * `true` for backward compatibility — SDK consumers enumerating their
+     * own sessions see them. IDE session pickers pass `false` for parity
+     * with terminal `/resume`.
+     *
+     * Only applies when reading from the local filesystem; ignored when
+     * `sessionStore` is provided.
+     */
+    includeProgrammatic?: boolean;
+    /**
      * When provided, list sessions from this store instead of the local
      * filesystem. Requires `store.listSessions` to be defined.
      * @alpha
@@ -1152,6 +1169,10 @@ export declare type ModelInfo = {
      */
     value: string;
     /**
+     * Canonical wire model id this row's `value` resolves to (e.g. 'sonnet' → 'claude-sonnet-5'). Lets hosts match a persisted explicit id against the alias row that covers it.
+     */
+    resolvedModel?: string;
+    /**
      * Human-readable display name
      */
     displayName: string;
@@ -1179,6 +1200,7 @@ export declare type ModelInfo = {
      * Whether this model supports auto mode
      */
     supportsAutoMode?: boolean;
+
 
 };
 
@@ -1568,8 +1590,8 @@ export declare type Options = {
      * - `'low'` — Minimal thinking, fastest responses
      * - `'medium'` — Moderate thinking
      * - `'high'` — Deep reasoning (default)
-     * - `'xhigh'` — Deeper than high (Fable 5, Opus 4.7+)
-     * - `'max'` — Maximum effort (Fable 5, Opus 4.6+, Sonnet 4.6)
+     * - `'xhigh'` — Deeper than high (Fable 5, Opus 4.7+, Sonnet 5)
+     * - `'max'` — Maximum effort (Fable 5, Opus 4.6+, Sonnet 4.6+)
      *
      * @see https://docs.anthropic.com/en/docs/build-with-claude/effort
      */
@@ -1620,7 +1642,7 @@ export declare type Options = {
     mcpServers?: Record<string, McpServerConfig>;
     /**
      * Claude model to use. Defaults to the CLI default model.
-     * Examples: 'claude-sonnet-4-6', 'claude-opus-4-8', 'claude-fable-5'
+     * Examples: 'claude-sonnet-5', 'claude-opus-4-8', 'claude-fable-5'
      */
     model?: string;
     /**
@@ -1776,7 +1798,7 @@ export declare type Options = {
      *
      * @example Inline settings object
      * ```typescript
-     * settings: { model: 'claude-sonnet-4-6', permissions: { allow: ['Bash(*)'] } }
+     * settings: { model: 'claude-sonnet-5', permissions: { allow: ['Bash(*)'] } }
      * ```
      *
      * @example Path to settings file
@@ -2198,6 +2220,25 @@ export declare interface Query extends AsyncGenerator<SDKMessage, void> {
      */
     setPermissionMode(mode: PermissionMode): Promise<void>;
     /**
+     * Pin (or clear, with mode:null) a per-MCP-server permission-mode
+     * override. Tighten-only: only 'default' | 'auto' | null are accepted;
+     * the override applies only when the session mode would already
+     * auto-allow (bypassPermissions/auto), so it can never widen privilege.
+     * Only available in streaming input mode.
+     *
+     * @param serverName - The MCP server name (must match the name the server
+     *   was registered under)
+     * @param mode - 'default' to force per-action prompts, 'auto' to route
+     *   through the auto-mode classifier, or null to clear the override
+     * @returns An object with an optional `warning` — set when `serverName`
+     *   does not match any currently known MCP server. For a set, the
+     *   override is stored regardless and applies once a server with that
+     *   exact name connects; the warning is informational (typo detection).
+     */
+    setMcpPermissionModeOverride(serverName: string, mode: 'default' | 'auto' | null): Promise<{
+        warning?: string;
+    }>;
+    /**
      * Change the model used for subsequent responses.
      * Only available in streaming input mode.
      *
@@ -2255,6 +2296,23 @@ export declare interface Query extends AsyncGenerator<SDKMessage, void> {
      * @returns The complete initialization response
      */
     initializationResult(): Promise<SDKControlInitializeResponse>;
+    /**
+     * Re-send the `initialize` control request to an already-running CLI.
+     *
+     * Use this after a transport gap (e.g. reattaching to a daemon whose
+     * ring buffer evicted frames during a disconnect): the CLI's response
+     * carries any `can_use_tool` / `request_user_dialog` control requests
+     * the loop is still blocked on, and the SDK redelivers them to
+     * `canUseTool` / `onUserDialog`. In-flight request_ids are deduped
+     * SDK-side, but callbacks should be idempotent per request_id since a
+     * request whose response was lost in the gap will be dispatched again.
+     *
+     * Unlike {@link Query.initializationResult}, this always sends a fresh request
+     * rather than returning the cached first-connect result.
+     *
+     * @returns A fresh initialization response
+     */
+    reinitialize(): Promise<SDKControlInitializeResponse>;
     /**
      * Get the list of available skills for the current session.
      *
@@ -2548,6 +2606,19 @@ export declare type RewindFilesResult = {
     deletions?: number;
 };
 
+export declare type SandboxCredentialsConfig = NonNullable<z.infer<ReturnType<typeof SandboxCredentialsConfigSchema>>>;
+
+declare const SandboxCredentialsConfigSchema: () => z.ZodOptional<z.ZodObject<{
+    files: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        path: z.ZodString;
+        mode: z.ZodLiteral<"deny">;
+    }, z.core.$strip>>>;
+    envVars: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        name: z.ZodString;
+        mode: z.ZodLiteral<"deny">;
+    }, z.core.$strip>>>;
+}, z.core.$strip>>;
+
 export declare type SandboxFilesystemConfig = NonNullable<z.infer<ReturnType<typeof SandboxFilesystemConfigSchema>>>;
 
 /**
@@ -2615,6 +2686,16 @@ declare const SandboxSettingsSchema: () => z.ZodObject<{
         denyRead: z.ZodOptional<z.ZodArray<z.ZodString>>;
         allowRead: z.ZodOptional<z.ZodArray<z.ZodString>>;
         allowManagedReadPathsOnly: z.ZodOptional<z.ZodBoolean>;
+    }, z.core.$strip>>;
+    credentials: z.ZodOptional<z.ZodObject<{
+        files: z.ZodOptional<z.ZodArray<z.ZodObject<{
+            path: z.ZodString;
+            mode: z.ZodLiteral<"deny">;
+        }, z.core.$strip>>>;
+        envVars: z.ZodOptional<z.ZodArray<z.ZodObject<{
+            name: z.ZodString;
+            mode: z.ZodLiteral<"deny">;
+        }, z.core.$strip>>>;
     }, z.core.$strip>>;
     ignoreViolations: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodArray<z.ZodString>>>;
     enableWeakerNestedSandbox: z.ZodOptional<z.ZodBoolean>;
@@ -2711,6 +2792,7 @@ export declare type SDKCompactBoundaryMessage = {
         trigger: 'manual' | 'auto';
         pre_tokens: number;
         post_tokens?: number;
+
         duration_ms?: number;
 
 
@@ -3013,6 +3095,17 @@ export declare type SDKControlGetUsageResponse = {
              */
             resets_at: string | null;
         } | null;
+        /**
+         * Per-model weekly windows from the server limits[] array, filtered by the overage-included-models allowlist. Additive — present only when the server emits them.
+         */
+        model_scoped?: {
+            /**
+             * Server-supplied label for the model bucket (e.g. 'Fable').
+             */
+            display_name: string;
+            utilization: number | null;
+            resets_at: string | null;
+        }[];
         extra_usage?: {
             is_enabled: boolean;
             monthly_limit: number | null;
@@ -3374,7 +3467,7 @@ export declare type SDKControlRequest = {
     request: SDKControlRequestInner;
 };
 
-declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlGetUsageRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlRegisterRepoRootRequest | SDKControlReloadPluginsRequest | SDKControlReloadSkillsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlSetMcpPermissionModeOverrideRequest | SDKControlRewindConversationRequest | SDKControlChannelEnableRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlClaudeOAuthWaitForCompletionRequest | SDKControlRemoteControlRequest | SDKControlGenerateSessionTitleRequest | SDKControlSideQuestionRequest | SDKControlUltrareviewLaunchRequest | SDKControlStageFileRequest | SDKControlMessageRatedRequest | SDKControlOAuthTokenRefreshRequest | SDKControlHostAuthTokenRefreshRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest | SDKControlSubmitFeedbackRequest;
+declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlGetUsageRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlRegisterRepoRootRequest | SDKControlReloadPluginsRequest | SDKControlReloadSkillsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlSetMcpPermissionModeOverrideRequest | SDKControlRewindConversationRequest | SDKControlChannelEnableRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlClaudeOAuthWaitForCompletionRequest | SDKControlRemoteControlRequest | SDKControlGenerateSessionTitleRequest | SDKControlSideQuestionRequest | SDKControlUltrareviewLaunchRequest | SDKControlStageFileRequest | SDKControlAddDirectoryRequest | SDKControlMessageRatedRequest | SDKControlOAuthTokenRefreshRequest | SDKControlHostAuthTokenRefreshRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest | SDKControlSubmitFeedbackRequest;
 
 /**
  * Requests the SDK consumer to render a tool-driven blocking dialog and return the user choice. Used by tools that previously rendered Ink JSX via setToolJSX with an onDone callback.
@@ -3631,7 +3724,7 @@ export declare type SDKMemoryRecallMessage = {
     session_id: string;
 };
 
-export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKModelRefusalFallbackMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKWorkerShuttingDownMessage | SDKCommandsChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage | SDKInformationalMessage;
+export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKModelRefusalFallbackMessage | SDKModelRefusalNoFallbackMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKWorkerShuttingDownMessage | SDKCommandsChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage | SDKInformationalMessage;
 
 /**
  * Provenance of a user-role message (peer session, team lead, channel). Absent or `human` means keyboard input from the user.
@@ -3697,6 +3790,26 @@ export declare type SDKModelRefusalFallbackMessage = {
      * Wire uuids of the messages this fallback retracted — the refused partial as the consumer received it (one uuid per normalized SDK message; multi-block messages carry per-block derived uuids) plus any tombstoned tool_results. Emitted AFTER the retraction, so this is a resolution-time eviction signal: remove these messages from transcript state on receipt. Eviction is idempotent — unknown or already-removed uuids are a no-op. Absent when emitted by an older CLI.
      */
     retracted_message_uuids?: string[];
+    /**
+     * UUID of the user message the refused request was for — the rewind target and composer prefill for edit-and-retry. This is the message's own uuid as delivered on the replay ack (not a per-block normalized uuid). null when the refused turn was not human-authored (e.g. a background task notification or auto-continuation — nothing to edit-and-retry) or otherwise cannot be identified; absent from older CLIs.
+     */
+    refused_user_message_uuid?: string | null;
+    content: string;
+    uuid: UUID;
+    session_id: string;
+};
+
+/**
+ * Emitted when the model ends the stream with stop_reason "refusal" and no fallback model is configured, so the turn ends as an error. The structured counterpart to detecting stop_reason "refusal" on the assistant error frame. Not emitted when a fallback existed but was declined or gate-failed (model_refusal_fallback covers the retry case). Absent from older CLIs.
+ */
+export declare type SDKModelRefusalNoFallbackMessage = {
+    type: 'system';
+    subtype: 'model_refusal_no_fallback';
+    original_model: string;
+    request_id: string | null;
+    api_refusal_category?: string | null;
+    api_refusal_explanation?: string | null;
+    refused_user_message_uuid?: string | null;
     content: string;
     uuid: UUID;
     session_id: string;
@@ -3820,7 +3933,7 @@ export declare type SDKRateLimitEvent = {
 export declare type SDKRateLimitInfo = {
     status: 'allowed' | 'allowed_warning' | 'rejected';
     resetsAt?: number;
-    rateLimitType?: 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet' | 'overage';
+    rateLimitType?: 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet' | 'seven_day_overage_included' | 'overage';
     utilization?: number;
     overageStatus?: 'allowed' | 'allowed_warning' | 'rejected';
     overageResetsAt?: number;
@@ -4751,7 +4864,7 @@ export declare interface Settings {
                  */
                 timeout?: number;
                 /**
-                 * Model to use for this prompt hook (e.g., "claude-sonnet-4-6"). If not specified, uses the default small fast model.
+                 * Model to use for this prompt hook (e.g., "claude-sonnet-5"). If not specified, uses the default small fast model.
                  */
                 model?: string;
                 /**
@@ -4784,7 +4897,7 @@ export declare interface Settings {
                  */
                 timeout?: number;
                 /**
-                 * Model to use for this agent hook (e.g., "claude-sonnet-4-6"). If not specified, uses Haiku.
+                 * Model to use for this agent hook (e.g., "claude-sonnet-5"). If not specified, uses Haiku.
                  */
                 model?: string;
                 /**
@@ -4909,6 +5022,10 @@ export declare interface Settings {
      * Disable the Artifact tool (also via CLAUDE_CODE_DISABLE_ARTIFACT).
      */
     disableArtifact?: boolean;
+    /**
+     * Enable or disable the Artifact tool for this user. Unset = default by plan once the feature is available.
+     */
+    enableArtifact?: boolean;
     /**
      * Enable or disable the Workflows feature for this user. Unset = default by plan once the feature is available.
      */
@@ -5107,7 +5224,7 @@ export declare interface Settings {
             } | {
                 source: 'hostPattern';
                 /**
-                 * Regex pattern to match the host/domain extracted from any marketplace source type. For github sources, matches against "github.com". For git sources (SSH or HTTPS), extracts the hostname from the URL. Use in strictKnownMarketplaces to allow all marketplaces from a specific host (e.g., "^github\.mycompany\.com$").
+                 * Regex pattern to match the host/domain extracted from any marketplace source type. For github sources, matches against github.com. For git sources (SSH or HTTPS), extracts the hostname from the URL. Use in strictKnownMarketplaces to allow all marketplaces from a specific host (e.g., "^github\.mycompany\.com$").
                  */
                 hostPattern: string;
             } | {
@@ -5307,7 +5424,7 @@ export declare interface Settings {
     } | {
         source: 'hostPattern';
         /**
-         * Regex pattern to match the host/domain extracted from any marketplace source type. For github sources, matches against "github.com". For git sources (SSH or HTTPS), extracts the hostname from the URL. Use in strictKnownMarketplaces to allow all marketplaces from a specific host (e.g., "^github\.mycompany\.com$").
+         * Regex pattern to match the host/domain extracted from any marketplace source type. For github sources, matches against github.com. For git sources (SSH or HTTPS), extracts the hostname from the URL. Use in strictKnownMarketplaces to allow all marketplaces from a specific host (e.g., "^github\.mycompany\.com$").
          */
         hostPattern: string;
     } | {
@@ -5497,7 +5614,7 @@ export declare interface Settings {
     } | {
         source: 'hostPattern';
         /**
-         * Regex pattern to match the host/domain extracted from any marketplace source type. For github sources, matches against "github.com". For git sources (SSH or HTTPS), extracts the hostname from the URL. Use in strictKnownMarketplaces to allow all marketplaces from a specific host (e.g., "^github\.mycompany\.com$").
+         * Regex pattern to match the host/domain extracted from any marketplace source type. For github sources, matches against github.com. For git sources (SSH or HTTPS), extracts the hostname from the URL. Use in strictKnownMarketplaces to allow all marketplaces from a specific host (e.g., "^github\.mycompany\.com$").
          */
         hostPattern: string;
     } | {
@@ -5606,6 +5723,10 @@ export declare interface Settings {
         };
     })[];
     /**
+     * When true (and set in managed settings), rejects the --plugin-dir, --plugin-url, --agents, and non-sdk --mcp-config CLI flags at startup. Closes the CLI-flag bypass of strictKnownMarketplaces. Pair with allowedMcpServers for per-server MCP control; this setting does not gate other MCP entry points (SDK setMcpServers, claude mcp add, .mcp.json). Also blocks surfaces that spawn the CLI with these flags internally (see settings documentation). Only honored from managed settings; ignored in user/project/local settings.
+     */
+    disableSideloadFlags?: boolean;
+    /**
      * Marketplace names whose plugins may surface as contextual install suggestions (relevance-based tips). No marketplace-declared suggestions surface without this allowlist; the built-in first-party frontend-design tip is unaffected. Only honored when set in managed settings (policy scope); the key is ignored in user, project, and local settings. A name only takes effect when the marketplace is registered on the machine AND its registered source is also declared in managed settings, either as the extraKnownMarketplaces entry for that name or as an entry of strictKnownMarketplaces. A marketplace registered from a different source under an allowlisted name is ignored. The official marketplace is exempt from the source requirement: allowlisting its name alone suffices, since that name can only register from the official Anthropic source.
      */
     pluginSuggestionMarketplaces?: string[];
@@ -5711,6 +5832,34 @@ export declare interface Settings {
              * When true (set in managed settings), only allowRead paths from policySettings are used.
              */
             allowManagedReadPathsOnly?: boolean;
+        };
+        credentials?: {
+            /**
+             * Credential files or directories to protect. `deny` blocks reads inside the sandbox.
+             */
+            files?: {
+                /**
+                 * Path to a credential file or directory. Same resolution as sandbox.filesystem.* paths: absolute, ~ expanded, or relative to the settings file root (project root for project settings, ~/.claude for user settings).
+                 */
+                path: string;
+                /**
+                 * Access mode for this path. Only `deny` is supported.
+                 */
+                mode: 'deny';
+            }[];
+            /**
+             * Environment variables to protect. `deny` unsets the variable for sandboxed commands.
+             */
+            envVars?: {
+                /**
+                 * Environment variable name.
+                 */
+                name: string;
+                /**
+                 * Access mode for this environment variable. Only `deny` is supported.
+                 */
+                mode: 'deny';
+            }[];
         };
         ignoreViolations?: {
             [k: string]: string[];
@@ -5836,6 +5985,8 @@ export declare interface Settings {
             options?: {
                 [k: string]: string | number | boolean | string[];
             };
+        } | {
+            [k: string]: unknown;
         };
     };
     /**
@@ -5900,6 +6051,7 @@ export declare interface Settings {
      * Reduce or disable animations for accessibility (spinner shimmer, flash effects, etc.)
      */
     prefersReducedMotion?: boolean;
+
 
 
     /**
