@@ -50,6 +50,11 @@ type BrowserQueryOptionsBase = {
     jsonSchema?: Record<string, unknown>;
     onElicitation?: OnElicitation;
     onUserDialog?: OnUserDialog;
+    /**
+     * When enabled, the remote CLI emits a `prompt_suggestion` message after
+     * each turn's result. At most one per turn.
+     */
+    promptSuggestions?: boolean;
 };
 /**
  * Exactly one of `websocket` | `sse` must be provided. `sse` is the v1alpha2
