@@ -89,6 +89,14 @@ export declare type AgentDefinition = {
      * Permission mode controlling how tool executions are handled
      */
     permissionMode?: PermissionMode;
+    /**
+     * Agent type auto-spawned as a background observer whenever this agent runs. The observer receives read-only activity digests and reports via the ObserverReport tool; it never participates in the task.
+     */
+    observer?: string;
+    /**
+     * Supplemental postamble appended (after the harness-owned default) to each activity digest sent to the observer. Blank values are ignored.
+     */
+    observerMessage?: string;
 };
 
 /**
@@ -188,6 +196,12 @@ export declare type BaseOutputFormat = {
 /**
  * Permission callback function for controlling tool usage.
  * Called before each tool execution to determine if it should be allowed.
+ *
+ * Return `null` ONLY after the consumer has already sent the
+ * control_response out-of-band (e.g. a signed HTTP POST echoing
+ * `requestId`); the SDK will skip its own transport write. Fail-closed: an
+ * accidental null means no control_response is sent and the tool stays
+ * blocked indefinitely — permission prompts have no park deadline.
  */
 export declare type CanUseTool = (toolName: string, input: Record<string, unknown>, options: {
     /** Signaled if the operation should be aborted. */
@@ -231,7 +245,13 @@ export declare type CanUseTool = (toolName: string, input: Record<string, unknow
     toolUseID: string;
     /** If running within the context of a sub-agent, the sub-agent's ID. */
     agentID?: string;
-}) => Promise<PermissionResult>;
+    /**
+     * The control_request envelope's `request_id`. A control_response sent
+     * out-of-band (e.g. a signed HTTP POST instead of the SDK's WS write)
+     * must echo this value for the worker to match it.
+     */
+    requestId: string;
+}) => Promise<PermissionResult | null>;
 
 export declare type ConfigChangeHookInput = BaseHookInput & {
     hook_event_name: 'ConfigChange';
@@ -985,6 +1005,7 @@ export declare type McpHttpServerConfig = {
      * Per-server tool-call timeout in milliseconds. Overrides the MCP_TOOL_TIMEOUT environment variable for this server. Hard wall-clock limit per call; progress notifications do not extend it. Values below 1000ms are ignored (falls through to MCP_TOOL_TIMEOUT or the default).
      */
     timeout?: number;
+
     /**
      * When true, all tools from this server are always included in the prompt and never deferred behind tool search. Equivalent to setting defer_loading: false on the API. Default: tools are deferred when tool search is enabled. As a side effect this also blocks startup until the server is connected (capped at the standard 5s connect timeout) even though MCP startup is otherwise non-blocking by default, since the tools must be present when the turn-1 prompt is built.
      */
@@ -1099,6 +1120,7 @@ export declare type McpSSEServerConfig = {
      * Per-server tool-call timeout in milliseconds. Overrides the MCP_TOOL_TIMEOUT environment variable for this server. Hard wall-clock limit per call; progress notifications do not extend it. Values below 1000ms are ignored (falls through to MCP_TOOL_TIMEOUT or the default).
      */
     timeout?: number;
+
     /**
      * When true, all tools from this server are always included in the prompt and never deferred behind tool search. Equivalent to setting defer_loading: false on the API. Default: tools are deferred when tool search is enabled. As a side effect this also blocks startup until the server is connected (capped at the standard 5s connect timeout) even though MCP startup is otherwise non-blocking by default, since the tools must be present when the turn-1 prompt is built.
      */
@@ -2238,6 +2260,7 @@ export declare interface Query extends AsyncGenerator<SDKMessage, void> {
     setMcpPermissionModeOverride(serverName: string, mode: 'default' | 'auto' | null): Promise<{
         warning?: string;
     }>;
+
     /**
      * Change the model used for subsequent responses.
      * Only available in streaming input mode.
@@ -2413,6 +2436,7 @@ export declare interface Query extends AsyncGenerator<SDKMessage, void> {
      * @param mtime - File mtime (floored ms) at the time of the observed Read
      */
     seedReadState(path: string, mtime: number): Promise<void>;
+
 
 
 
@@ -2615,8 +2639,13 @@ declare const SandboxCredentialsConfigSchema: () => z.ZodOptional<z.ZodObject<{
     }, z.core.$strip>>>;
     envVars: z.ZodOptional<z.ZodArray<z.ZodObject<{
         name: z.ZodString;
-        mode: z.ZodLiteral<"deny">;
+        mode: z.ZodEnum<{
+            deny: "deny";
+            mask: "mask";
+        }>;
+        injectHosts: z.ZodOptional<z.ZodArray<z.ZodString>>;
     }, z.core.$strip>>>;
+    allowPlaintextInject: z.ZodOptional<z.ZodBoolean>;
 }, z.core.$strip>>;
 
 export declare type SandboxFilesystemConfig = NonNullable<z.infer<ReturnType<typeof SandboxFilesystemConfigSchema>>>;
@@ -2694,8 +2723,13 @@ declare const SandboxSettingsSchema: () => z.ZodObject<{
         }, z.core.$strip>>>;
         envVars: z.ZodOptional<z.ZodArray<z.ZodObject<{
             name: z.ZodString;
-            mode: z.ZodLiteral<"deny">;
+            mode: z.ZodEnum<{
+                deny: "deny";
+                mask: "mask";
+            }>;
+            injectHosts: z.ZodOptional<z.ZodArray<z.ZodString>>;
         }, z.core.$strip>>>;
+        allowPlaintextInject: z.ZodOptional<z.ZodBoolean>;
     }, z.core.$strip>>;
     ignoreViolations: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodArray<z.ZodString>>>;
     enableWeakerNestedSandbox: z.ZodOptional<z.ZodBoolean>;
@@ -3303,6 +3337,13 @@ declare type SDKControlInterruptRequest = {
 };
 
 /**
+ * Requests the worker's selectable model catalog. Fulfills the caps.modelCatalog capability: in a remote thin-client session the worker's provider, settings cascade, and enforcement policy decide which models the session can run, so the thin client must ask rather than read its own getModelOptions().
+ */
+declare type SDKControlListModelsRequest = {
+    subtype: 'list_models';
+};
+
+/**
  * Invokes an MCP tool via the subprocess MCP client without a model turn. No permission check (control channel is trusted, same as other subtypes). SDK-type MCP servers (config.type === "sdk") are rejected — they are caller-provided, so the caller can invoke them directly without the subprocess round-trip. Result content passes through the same processing as model-turn MCP calls. Session expiry is not retried automatically; callers can mcp_reconnect and retry. UrlElicitationRequired (-32042) tries Elicitation hooks; if no hook resolves, the call errors with the URL in the message — open it out-of-band, then retry mcp_call.
  */
 declare type SDKControlMcpCallRequest = {
@@ -3378,6 +3419,10 @@ declare type SDKControlPermissionRequest = {
     tool_use_id: string;
     agent_id?: string;
     description?: string;
+    /**
+     * True when the tool's approval card IS the user-interaction surface (Tool.requiresUserInteraction()). SDK hosts must not offer one-tap Approve/Deny for these — the user has to open the session and respond on the card itself.
+     */
+    requires_user_interaction?: boolean;
 };
 
 /**
@@ -3467,7 +3512,7 @@ export declare type SDKControlRequest = {
     request: SDKControlRequestInner;
 };
 
-declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlGetUsageRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlRegisterRepoRootRequest | SDKControlReloadPluginsRequest | SDKControlReloadSkillsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlSetMcpPermissionModeOverrideRequest | SDKControlRewindConversationRequest | SDKControlChannelEnableRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlClaudeOAuthWaitForCompletionRequest | SDKControlRemoteControlRequest | SDKControlGenerateSessionTitleRequest | SDKControlSideQuestionRequest | SDKControlUltrareviewLaunchRequest | SDKControlStageFileRequest | SDKControlAddDirectoryRequest | SDKControlMessageRatedRequest | SDKControlOAuthTokenRefreshRequest | SDKControlHostAuthTokenRefreshRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest | SDKControlSubmitFeedbackRequest;
+declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlListModelsRequest | SDKControlGetUsageRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlGetWorkspaceDiffRequest | SDKControlGetPlanRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlRegisterRepoRootRequest | SDKControlReloadPluginsRequest | SDKControlReloadSkillsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlSetMcpPermissionModeOverrideRequest | SDKControlRewindConversationRequest | SDKControlChannelEnableRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlClaudeOAuthWaitForCompletionRequest | SDKControlRemoteControlRequest | SDKControlGenerateSessionTitleRequest | SDKControlSideQuestionRequest | SDKControlUltrareviewLaunchRequest | SDKControlStageFileRequest | SDKControlAddDirectoryRequest | SDKControlSetCwdRequest | SDKControlMessageRatedRequest | SDKControlOAuthTokenRefreshRequest | SDKControlHostAuthTokenRefreshRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest | SDKControlSubmitFeedbackRequest;
 
 /**
  * Requests the SDK consumer to render a tool-driven blocking dialog and return the user choice. Used by tools that previously rendered Ink JSX via setToolJSX with an onDone callback.
@@ -3724,7 +3769,7 @@ export declare type SDKMemoryRecallMessage = {
     session_id: string;
 };
 
-export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKModelRefusalFallbackMessage | SDKModelRefusalNoFallbackMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKWorkerShuttingDownMessage | SDKCommandsChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage | SDKInformationalMessage;
+export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKControlRequestProgressMessage | SDKModelRefusalFallbackMessage | SDKModelRefusalNoFallbackMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKWorkerShuttingDownMessage | SDKCommandsChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage | SDKInformationalMessage | SDKConversationResetMessage;
 
 /**
  * Provenance of a user-role message (peer session, team lead, channel). Absent or `human` means keyboard input from the user.
@@ -3748,7 +3793,13 @@ export declare type SDKMessageOrigin = {
 } | {
     kind: 'coordinator';
 } | {
+    kind: 'observer';
+    from: string;
+    senderTaskId: string;
+} | {
     kind: 'auto-continuation';
+} | {
+    kind: 'observer-activity';
 };
 
 /**
@@ -4380,6 +4431,13 @@ export declare type SessionMessage = {
     session_id: string;
     message: unknown;
     parent_tool_use_id: string | null;
+    /**
+     * agentId of the subagent that spawned this subagent, or null when this
+     * message belongs to a depth-1 subagent (spawned by the main loop) or to
+     * the main session itself. Sessions whose metadata lacks the field report
+     * null.
+     */
+    parent_agent_id: string | null;
 };
 
 /**
@@ -4692,7 +4750,7 @@ export declare interface Settings {
          */
         ask?: string[];
         /**
-         * Default permission mode when Claude Code needs access
+         * Default permission mode when Claude Code needs access ('manual' is accepted as an alias for 'default')
          */
         defaultMode?: 'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan';
         /**
@@ -5023,7 +5081,7 @@ export declare interface Settings {
      */
     disableArtifact?: boolean;
     /**
-     * Enable or disable the Artifact tool for this user. Unset = default by plan once the feature is available.
+     * Enable or disable the Artifact tool for this user. Unset defaults to enabled once the feature is available.
      */
     enableArtifact?: boolean;
     /**
@@ -5804,7 +5862,7 @@ export declare interface Settings {
             httpProxyPort?: number;
             socksProxyPort?: number;
             /**
-             * [EXPERIMENTAL] Enable in-process TLS termination so the per-request filter can see HTTPS request bodies. Provide a CA cert+key, or omit both to have sandbox-runtime generate an ephemeral one for the session.
+             * [EXPERIMENTAL] Enable in-process TLS termination so the per-request filter can see HTTPS request bodies. Provide a CA cert+key, or omit both to have sandbox-runtime generate an ephemeral one for the session. Only honored from user, managed/policy, or CLI (`--settings`) settings — project settings (.claude/settings.json and .claude/settings.local.json) are ignored.
              */
             tlsTerminate?: {
                 caCertPath?: string;
@@ -5848,7 +5906,7 @@ export declare interface Settings {
                 mode: 'deny';
             }[];
             /**
-             * Environment variables to protect. `deny` unsets the variable for sandboxed commands.
+             * Environment variables to protect. `deny` unsets the variable for sandboxed commands; `mask` substitutes a sentinel inside the sandbox and injects the real value at the proxy.
              */
             envVars?: {
                 /**
@@ -5856,10 +5914,18 @@ export declare interface Settings {
                  */
                 name: string;
                 /**
-                 * Access mode for this environment variable. Only `deny` is supported.
+                 * Access mode for this environment variable. `deny` unsets the variable for sandboxed commands; `mask` shows sandboxed commands a sentinel value and the host proxy swaps sentinel→real on egress to `injectHosts`.
                  */
-                mode: 'deny';
+                mode: 'deny' | 'mask';
+                /**
+                 * Optional narrowing of where the proxy substitutes this credential. Only meaningful when mode is `mask`; accepted but ignored for `deny`. If unset, defaults to `network.allowedDomains` — the credential is injected at every reachable host. Each entry must be reachable via `network.allowedDomains` (sandbox-runtime validates this).
+                 */
+                injectHosts?: string[];
             }[];
+            /**
+             * Allow sentinel→real substitution on the plain-HTTP proxy path. Defaults to false: without TLS termination the upstream identity is unverified and the credential travels in cleartext. Set only for trusted-network test fixtures. Only honored from user, managed/policy, or CLI (`--settings`) settings — project settings (.claude/settings.json and .claude/settings.local.json) are ignored.
+             */
+            allowPlaintextInject?: boolean;
         };
         ignoreViolations?: {
             [k: string]: string[];
@@ -5959,6 +6025,10 @@ export declare interface Settings {
      */
     showClearContextOnPlanAccept?: boolean;
     /**
+     * Idle time before Claude's questions auto-continue with any answers selected so far. Defaults to never — auto-continue only runs when explicitly set to 60s/5m/10m.
+     */
+    askUserQuestionTimeout?: '60s' | '5m' | '10m' | 'never';
+    /**
      * Name of an agent (built-in or custom) to use for the main thread. Applies the agent's system prompt, tool restrictions, and model.
      */
     agent?: string;
@@ -6051,6 +6121,7 @@ export declare interface Settings {
      * Reduce or disable animations for accessibility (spinner shimmer, flash effects, etc.)
      */
     prefersReducedMotion?: boolean;
+
 
 
 
@@ -6340,7 +6411,7 @@ export declare function startup(_params?: {
     initializeTimeoutMs?: number;
 }): Promise<WarmQuery>;
 
-declare type StdoutMessage = coreTypes.SDKMessage | coreTypes.SDKPostTurnSummaryMessage | coreTypes.SDKTaskSummaryMessage | coreTypes.SDKTranscriptMirrorMessage | SDKControlResponse | SDKControlRequest | SDKControlCancelRequest | SDKKeepAliveMessage;
+declare type StdoutMessage = coreTypes.SDKMessage | coreTypes.SDKPostTurnSummaryMessage | coreTypes.SDKTaskSummaryMessage | coreTypes.SDKTranscriptMirrorMessage | coreTypes.SDKActiveGoalMessage | SDKControlResponse | SDKControlRequest | SDKControlCancelRequest | SDKKeepAliveMessage;
 
 export declare type StopFailureHookInput = BaseHookInput & {
     hook_event_name: 'StopFailure';
@@ -6568,6 +6639,13 @@ export declare interface Transport {
      * Each transport handles its own protocol and error checking
      */
     readMessages(): AsyncGenerator<StdoutMessage, void, unknown>;
+    /**
+     * Register a request_id whose control_response the caller will await
+     * out-of-band via Query.awaitControlResponse. Transports that see
+     * per-frame source (multi-client fan-out) SHOULD drop non-worker
+     * control_responses matching this id — only the worker may answer.
+     */
+    expectControlResponse?(requestId: string): void;
     /**
      * End the input stream
      */

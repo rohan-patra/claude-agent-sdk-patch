@@ -29,6 +29,7 @@ export type ToolInputSchemas =
   | WebFetchInput
   | WebSearchInput
   | AskUserQuestionInput
+  | ClaudeDesignInput
   | ProjectsInput
   | EnterPlanModeInput
   | TaskCreateInput
@@ -87,6 +88,7 @@ export type ToolOutputSchemas =
   | CronDeleteOutput
   | CronListOutput
   | PushNotificationOutput
+  | ClaudeDesignOutput
   | ProjectsOutput;
 export type AgentOutput =
   | {
@@ -304,6 +306,10 @@ export type FileReadOutput =
          */
         filePath: string;
       };
+      /**
+       * Set when the dedup matched a startup-seeded entry (CLAUDE.md / nested memory) rather than a prior Read tool_result
+       */
+      source?: "seeded";
     };
 export type ListMcpResourcesOutput = {
   /**
@@ -364,9 +370,6 @@ export type ProjectsOutput =
       knowledge: {
         knowledge_size: number;
         max_knowledge_size: number;
-        search_threshold: number | null;
-        rag_active: boolean;
-        remaining_budget: number | null;
       };
     }
   | {
@@ -395,13 +398,7 @@ export type ProjectsOutput =
       path: string;
       doc_uuid: string;
       replaced: boolean;
-      knowledge: {
-        knowledge_size: number;
-        max_knowledge_size: number;
-        search_threshold: number | null;
-        rag_active: boolean;
-        remaining_budget: number | null;
-      };
+      present_to_user?: boolean;
     }
   | {
       method: "project_delete";
@@ -428,7 +425,7 @@ export interface AgentInput {
    */
   model?: "sonnet" | "opus" | "haiku" | "fable";
   /**
-   * Set to true to run this agent in the background. You will be notified when it completes.
+   * Agents run in the background by default; you will be notified when one completes. Set to false to run this agent synchronously when you need its result before continuing.
    */
   run_in_background?: boolean;
   /**
@@ -630,7 +627,7 @@ export interface GrepInput {
 }
 export interface TaskStopInput {
   /**
-   * The ID of the background task to stop
+   * The ID of the background task to stop. Agent-team teammates and named background agents are also accepted by agent ID or name.
    */
   task_id?: string;
   /**
@@ -716,6 +713,10 @@ export interface ReportFindingsInput {
      * Concrete inputs/state → wrong output/crash
      */
     failure_scenario: string;
+    /**
+     * Short kebab-case slug of the finding type, e.g. "correctness", "simplification", "efficiency", "test-coverage"
+     */
+    category?: string;
     /**
      * Set when a verify pass ran; absent on inline-only reviews
      */
@@ -2337,6 +2338,18 @@ export interface AskUserQuestionInput {
     source?: string;
   };
 }
+export interface ClaudeDesignInput {
+  /**
+   * Claude Design action to perform. Call with "list" first to discover the available operations and their argument schemas.
+   */
+  operation: string;
+  /**
+   * Action input object (server-validated). Pass {} for operations that take no input.
+   */
+  arguments: {
+    [k: string]: unknown;
+  };
+}
 export interface ProjectsInput {
   method: "project_info" | "project_read" | "project_search" | "project_write" | "project_delete";
   /**
@@ -2352,9 +2365,9 @@ export interface ProjectsInput {
    */
   local_path?: string;
   /**
-   * project_write: bypass the chat-injection budget guard. Set only when the write is genuinely worth degrading chat to retrieval mode for everyone in the project.
+   * project_write: true marks this doc as the file the user needs to see — the deliverable they asked for or must act on. Defaults to false; leave it unset for routine saves, notes, and bulk writes.
    */
-  force?: boolean;
+  present_to_user?: boolean;
   /**
    * project_search: knowledge-base query
    */
@@ -2505,17 +2518,21 @@ export interface CronDeleteInput {
 export interface CronListInput {}
 export interface ScheduleWakeupInput {
   /**
-   * Seconds from now to wake up. Clamped to [60, 3600] by the runtime.
+   * Seconds from now to wake up. Clamped to [60, 3600] by the runtime. Required unless `stop` is true.
    */
-  delaySeconds: number;
+  delaySeconds?: number;
   /**
-   * One short sentence explaining the chosen delay. Goes to telemetry and is shown to the user. Be specific.
+   * One short sentence explaining the chosen delay. Goes to telemetry and is shown to the user. Be specific. Required unless `stop` is true.
    */
-  reason: string;
+  reason?: string;
   /**
-   * The /loop input to fire on wake-up. Pass the same /loop input verbatim each turn so the next firing re-enters the skill and continues the loop. For autonomous /loop (no user prompt), pass the literal sentinel `<<autonomous-loop-dynamic>>` instead (the dynamic-pacing variant, not the CronCreate-mode `<<autonomous-loop>>`).
+   * The /loop input to fire on wake-up. Pass the same /loop input verbatim each turn so the next firing re-enters the skill and continues the loop. For autonomous /loop (no user prompt), pass the literal sentinel `<<autonomous-loop-dynamic>>` instead (the dynamic-pacing variant, not the CronCreate-mode `<<autonomous-loop>>`). Required unless `stop` is true.
    */
-  prompt: string;
+  prompt?: string;
+  /**
+   * Set to true to end the dynamic loop immediately instead of scheduling another wakeup. When true, all other fields are ignored and no further wakeups fire.
+   */
+  stop?: boolean;
 }
 export interface RemoteTriggerInput {
   action: "list" | "get" | "create" | "update" | "run";
@@ -2993,6 +3010,10 @@ export interface ReportFindingsOutput {
      */
     failure_scenario: string;
     /**
+     * Short kebab-case slug of the finding type, e.g. "correctness", "simplification", "efficiency", "test-coverage"
+     */
+    category?: string;
+    /**
      * Set when a verify pass ran; absent on inline-only reviews
      */
     verdict?: "CONFIRMED" | "PLAUSIBLE";
@@ -3271,6 +3292,10 @@ export interface AskUserQuestionOutput {
       notes?: string;
     };
   };
+  /**
+   * Set when the dialog auto-resolved after this many milliseconds of idle (user away from keyboard). Absent on every human-resolved path.
+   */
+  afkTimeoutMs?: number;
 }
 export interface EnterWorktreeOutput {
   worktreePath: string;
@@ -3327,7 +3352,15 @@ export interface ArtifactOutput {
   path: string;
   title?: string;
   version?: string;
-  mcpDropped?: string;
+  capabilities?: unknown;
+  stored?: {
+    contract: string;
+    capabilities?: {
+      [k: string]: unknown;
+    };
+  };
+  warnings?: string[];
+  contract?: string;
 }
 export interface RemoteTriggerOutput {
   status: number;
@@ -3351,6 +3384,10 @@ export interface ScheduleWakeupOutput {
    * True if the requested delaySeconds was outside [60, 3600]
    */
   wasClamped: boolean;
+  /**
+   * True when the model ended the loop via `stop: true`
+   */
+  stopped?: boolean;
 }
 export interface MonitorOutput {
   /**
@@ -3474,10 +3511,15 @@ export interface PushNotificationOutput {
   pushSent?: boolean;
   localSent?: boolean;
   disabledReason?: "config_off" | "user_present" | "no_transport";
-  idleSec?: number;
-  hasFocus?: boolean;
   /**
    * ISO timestamp captured at tool execution on the emitting process. Optional — resumed sessions replay pre-sentAt outputs verbatim.
    */
   sentAt?: string;
+}
+export interface ClaudeDesignOutput {
+  operation: string;
+  content: {
+    [k: string]: unknown;
+  }[];
+  isError?: boolean;
 }
