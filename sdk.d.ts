@@ -372,11 +372,15 @@ declare namespace coreTypes {
         PreToolUseHookSpecificOutput,
         RewindFilesResult,
         SDKAPIRetryMessage,
+        SDKActiveGoalMessage,
         SDKAssistantMessageError,
         SDKAssistantMessage,
         SDKAuthStatusMessage,
+        SDKBackgroundTasksChangedMessage,
         SDKCommandsChangedMessage,
         SDKCompactBoundaryMessage,
+        SDKControlRequestProgressMessage,
+        SDKConversationResetMessage,
         SDKDeferredToolUse,
         SDKElicitationCompleteMessage,
         SDKFilesPersistedEvent,
@@ -2231,9 +2235,13 @@ export declare interface Query extends AsyncGenerator<SDKMessage, void> {
      */
     /**
      * Interrupt the current query execution. The query will stop processing
-     * and return control to the caller.
+     * and return control to the caller. On CLIs advertising the
+     * `interrupt_receipt_v1` capability (system/init `capabilities`) the
+     * resolved value is the interrupt receipt — `still_queued` uuids of async
+     * user messages that WILL still run unless cancelled first. Older CLIs
+     * resolve to `undefined`.
      */
-    interrupt(): Promise<void>;
+    interrupt(): Promise<SDKControlInterruptResponse | undefined>;
     /**
      * Change the permission mode for the current session.
      * Only available in streaming input mode.
@@ -2745,6 +2753,22 @@ declare const SandboxSettingsSchema: () => z.ZodObject<{
 }, z.core.$loose>;
 
 /**
+ * Emitted when the user's /goal Stop hook reports met (clears) or not-yet-met (bumps iterations + last_reason). Any surface with a goal indicator re-renders from this. value is null when the goal is cleared. From internal QueryEvent 'active_goal'.
+ */
+export declare type SDKActiveGoalMessage = {
+    type: 'active_goal';
+    value: {
+        condition: string;
+        iterations: number;
+        set_at: number;
+        tokens_at_start: number;
+        last_reason?: string;
+    } | null;
+    uuid: UUID;
+    session_id: string;
+};
+
+/**
  * Emitted when an API request fails with a retryable error and will be retried after a delay. error_status is null for connection errors (e.g. timeouts) that had no HTTP response.
  */
 export declare type SDKAPIRetryMessage = {
@@ -2802,6 +2826,24 @@ export declare type SDKAuthStatusMessage = {
     isAuthenticating: boolean;
     output: string[];
     error?: string;
+    uuid: UUID;
+    session_id: string;
+};
+
+/**
+ * The full set of live background tasks, emitted whenever membership changes (start, completion, kill, a foreground agent being backgrounded). A level signal, unlike the task_started/task_notification edge bookends: consumers that only need 'is background work running' should replace their set with each payload rather than pairing edges, so a missed bookend cannot wedge a stale running indicator. Ordering relative to the bookends for the same transition is unspecified (in practice the level precedes them) and the payload carries ids only, so do not correlate it with the edge stream. The level is per-process: nothing is emitted at startup, so consumers must reset to the empty set whenever the session's CLI process (re)starts and let the next membership change repopulate it.
+ */
+export declare type SDKBackgroundTasksChangedMessage = {
+    type: 'system';
+    subtype: 'background_tasks_changed';
+    /**
+     * Every live background task after the change. REPLACE semantics: swap your set for this payload.
+     */
+    tasks: {
+        task_id: string;
+        task_type: string;
+        description: string;
+    }[];
     uuid: UUID;
     session_id: string;
 };
@@ -3029,6 +3071,13 @@ export declare type SDKControlGetContextUsageResponse = {
         cache_creation_input_tokens: number;
         cache_read_input_tokens: number;
     } | null;
+};
+
+/**
+ * Read the session's current plan-mode plan. Unlike read_file, the caller does not need to know the plan file's path — the worker resolves its own plan slug. Never creates a plan slug or file.
+ */
+declare type SDKControlGetPlanRequest = {
+    subtype: 'get_plan';
 };
 
 /**
@@ -3266,6 +3315,13 @@ export declare type SDKControlGetUsageResponse = {
 };
 
 /**
+ * Requests the workspace git diff for the thin-client /diff dialog. The worker resolves one base ref for both stats and hunks (working tree vs HEAD, falling back to branch-vs-default-merge-base when the tree is clean) and applies the standard caps (5s git timeout, 50 files, 1MB/file).
+ */
+declare type SDKControlGetWorkspaceDiffRequest = {
+    subtype: 'get_workspace_diff';
+};
+
+/**
  * Initializes the SDK session with hooks, MCP servers, and agent configuration.
  */
 declare type SDKControlInitializeRequest = {
@@ -3326,6 +3382,9 @@ export declare type SDKControlInitializeResponse = {
 
     fast_mode_state?: coreTypes.FastModeState;
 
+
+
+
 };
 
 /**
@@ -3334,6 +3393,16 @@ export declare type SDKControlInitializeResponse = {
 declare type SDKControlInterruptRequest = {
     subtype: 'interrupt';
 
+};
+
+/**
+ * Result of an interrupt operation. Advertised by the interrupt_receipt_v1 capability on system/init; older CLIs send an empty success response with no still_queued field.
+ */
+export declare type SDKControlInterruptResponse = {
+    /**
+     * Uuids of async user messages that survive this interrupt: commands still in the queue, plus any batch already dequeued for the imminent turn but not yet reachable by the abort. These WILL run unless cancelled first. Cancellation granularity: uuids still in the queue are individually cancellable via cancel_async_message; once a batch is dequeued and coalesced into one turn, cancelling a NON-representative member uuid is a no-op (its content still runs), while cancelling the batch-representative uuid drops the WHOLE coalesced batch — in both cases the cancel response reports cancelled:false because the message was no longer in the queue. Coverage caveats: only uuid-STAMPED messages appear (a message enqueued without a uuid still runs but is never listed, so [] does not mean "nothing will run"); only main-thread messages are listed (subagent-addressed messages are out of scope); and the list may include internally-enqueued uuids the client never sent (cron triggers, auto-resume continuations) — ignore unknown uuids rather than treating them as an error. Ordering: on a clean interrupt this receipt is written before the interrupted turn result; a turn that crashes during interrupt handling emits its error result on a direct-write path that may precede the receipt. Snapshot is taken synchronously with abort processing — probing the queue after the interrupted result instead always loses the race against the drain loop, which starts the next queued turn immediately.
+     */
+    still_queued: string[];
 };
 
 /**
@@ -3512,7 +3581,26 @@ export declare type SDKControlRequest = {
     request: SDKControlRequestInner;
 };
 
-declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlListModelsRequest | SDKControlGetUsageRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlGetWorkspaceDiffRequest | SDKControlGetPlanRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlRegisterRepoRootRequest | SDKControlReloadPluginsRequest | SDKControlReloadSkillsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlSetMcpPermissionModeOverrideRequest | SDKControlRewindConversationRequest | SDKControlChannelEnableRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlClaudeOAuthWaitForCompletionRequest | SDKControlRemoteControlRequest | SDKControlGenerateSessionTitleRequest | SDKControlSideQuestionRequest | SDKControlUltrareviewLaunchRequest | SDKControlStageFileRequest | SDKControlAddDirectoryRequest | SDKControlSetCwdRequest | SDKControlMessageRatedRequest | SDKControlOAuthTokenRefreshRequest | SDKControlHostAuthTokenRefreshRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest | SDKControlSubmitFeedbackRequest;
+declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlRenameSessionRequest | SDKControlSetColorRequest | SDKControlMcpStatusRequest | SDKControlGetContextUsageRequest | SDKControlGetSessionCostRequest | SDKControlListModelsRequest | SDKControlGetUsageRequest | SDKControlGetBinaryVersionRequest | SDKControlMcpCallRequest | SDKControlFileSuggestionsRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlReadFileRequest | SDKControlGetWorkspaceDiffRequest | SDKControlGetPlanRequest | SDKControlSeedReadStateRequest | SDKControlMcpSetServersRequest | SDKControlRegisterRepoRootRequest | SDKControlReloadPluginsRequest | SDKControlReloadSkillsRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlStopTaskRequest | SDKControlBackgroundTasksRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest | SDKControlRequestUserDialogRequest;
+
+/**
+ * Progress for a long-running client-originated control_request (currently only side_question), correlated by request_id. status 'started' means the worker accepted the request and launched the work; 'api_retry' carries the same retry counters as SDKAPIRetryMessage and is present only for that status.
+ */
+export declare type SDKControlRequestProgressMessage = {
+    type: 'system';
+    subtype: 'control_request_progress';
+    /**
+     * request_id of the in-flight control_request this progress belongs to.
+     */
+    request_id: string;
+    status: 'started' | 'api_retry';
+    attempt?: number;
+    max_retries?: number;
+    retry_delay_ms?: number;
+    error_status?: number | null;
+    uuid: UUID;
+    session_id: string;
+};
 
 /**
  * Requests the SDK consumer to render a tool-driven blocking dialog and return the user choice. Used by tools that previously rendered Ink JSX via setToolJSX with an onDone callback.
@@ -3596,6 +3684,16 @@ declare type SDKControlSetPermissionModeRequest = {
 declare type SDKControlStopTaskRequest = {
     subtype: 'stop_task';
     task_id: string;
+};
+
+/**
+ * Emitted by /clear, plan-mode exit, and fresh-session flows. The surface should mount a fresh transcript under new_conversation_id and reset any cached session title. From internal QueryEvent 'conversation_reset'.
+ */
+export declare type SDKConversationResetMessage = {
+    type: 'conversation_reset';
+    new_conversation_id: UUID;
+    uuid: UUID;
+    session_id: string;
 };
 
 export declare type SDKDeferredToolUse = {
@@ -3769,7 +3867,7 @@ export declare type SDKMemoryRecallMessage = {
     session_id: string;
 };
 
-export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKControlRequestProgressMessage | SDKModelRefusalFallbackMessage | SDKModelRefusalNoFallbackMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKWorkerShuttingDownMessage | SDKCommandsChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage | SDKInformationalMessage | SDKConversationResetMessage;
+export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKControlRequestProgressMessage | SDKModelRefusalFallbackMessage | SDKModelRefusalNoFallbackMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKBackgroundTasksChangedMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKWorkerShuttingDownMessage | SDKCommandsChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage | SDKInformationalMessage | SDKConversationResetMessage;
 
 /**
  * Provenance of a user-role message (peer session, team lead, channel). Absent or `human` means keyboard input from the user.
@@ -3782,12 +3880,19 @@ export declare type SDKMessageOrigin = {
 } | {
     kind: 'peer';
     from: string;
+    /**
+     * Sender display name, normalized by the harness: Unicode control, format, surrogate, and line/paragraph-separator code points stripped (categories Cc/Cf/Cs/Zl/Zp — covers bidi controls, zero-width characters, and tag characters), trimmed, at most 64 code points (+ ellipsis, never splitting a surrogate pair). Sender-asserted display text (the addressable identity is `from`) — render it as reported speech, but no client-side character sanitization is needed. Absent when the wire is not exactly one harness-formed envelope and on messages from older senders.
+     */
     name?: string;
 
     /**
      * Task id of the in-process background subagent that sent this message, stamped by the harness from the sending loop (never from tool input). Absent for cross-session peers.
      */
     senderTaskId?: string;
+    /**
+     * Decoded message body with the peer envelope stripped — byte-exact with what the model sees. Present only when the turn is exactly one harness-formed envelope (or an in-process agent message); render this instead of re-parsing the message text.
+     */
+    body?: string;
 } | {
     kind: 'task-notification';
 } | {
@@ -4167,6 +4272,10 @@ export declare type SDKSystemMessage = {
 
 
     fast_mode_state?: FastModeState;
+    /**
+     * Protocol capabilities this CLI supports, so SDK consumers can feature-detect instead of version-sniffing. Open set — ignore unknown values; check each capability for exactly the behavior you use. 'interrupt_receipt_v1' = the interrupt control_response success payload carries still_queued (uuids of async user messages that survive the interrupt). Absent on older CLIs.
+     */
+    capabilities?: string[];
 
 
 
@@ -6411,7 +6520,7 @@ export declare function startup(_params?: {
     initializeTimeoutMs?: number;
 }): Promise<WarmQuery>;
 
-declare type StdoutMessage = coreTypes.SDKMessage | coreTypes.SDKPostTurnSummaryMessage | coreTypes.SDKTaskSummaryMessage | coreTypes.SDKTranscriptMirrorMessage | coreTypes.SDKActiveGoalMessage | SDKControlResponse | SDKControlRequest | SDKControlCancelRequest | SDKKeepAliveMessage;
+declare type StdoutMessage = coreTypes.SDKMessage | coreTypes.SDKActiveGoalMessage | SDKControlResponse | SDKControlRequest | SDKControlCancelRequest | SDKKeepAliveMessage;
 
 export declare type StopFailureHookInput = BaseHookInput & {
     hook_event_name: 'StopFailure';

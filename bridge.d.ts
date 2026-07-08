@@ -117,7 +117,10 @@ export type AttachBridgeSessionOptions = {
      * fresh attach.
      */
     initialSequenceNum?: number;
-    /** CCRClient heartbeat interval. Defaults to 20s (server TTL is 60s). */
+    /**
+     * CCRClient heartbeat interval seed. Defaults to 20s. The server-advised
+     * interval (ccr_heartbeat_policy) overrides this after the first heartbeat.
+     */
     heartbeatIntervalMs?: number;
     /**
      * When true, the bridge only forwards events outbound (local → CCR). The

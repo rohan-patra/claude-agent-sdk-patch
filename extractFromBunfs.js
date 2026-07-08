@@ -146,7 +146,7 @@ export function extractFromBunfs(embeddedPath) {
     }
     return tmpPath
   } catch (err) {
-    // biome-ignore lint/suspicious/noConsole: intentional user-facing warning in standalone SDK helper
+    // oxlint-disable-next-line no-console -- intentional user-facing warning in standalone SDK helper
     console.warn(
       `[claude-agent-sdk] Failed to extract CLI from $bunfs: ${err.message}. ` +
         `Child processes cannot access $bunfs paths — the CLI will likely fail to start.`,
