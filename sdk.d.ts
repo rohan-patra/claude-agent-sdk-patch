@@ -3413,15 +3413,53 @@ declare type SDKControlListModelsRequest = {
 };
 
 /**
- * Invokes an MCP tool via the subprocess MCP client without a model turn. No permission check (control channel is trusted, same as other subtypes). SDK-type MCP servers (config.type === "sdk") are rejected — they are caller-provided, so the caller can invoke them directly without the subprocess round-trip. Result content passes through the same processing as model-turn MCP calls. Session expiry is not retried automatically; callers can mcp_reconnect and retry. UrlElicitationRequired (-32042) tries Elicitation hooks; if no hook resolves, the call errors with the URL in the message — open it out-of-band, then retry mcp_call.
+ * Invokes an MCP tool via the subprocess MCP client without a model turn. No permission check (control channel is trusted, same as other subtypes). SDK-type MCP servers (config.type === "sdk") are rejected — they are caller-provided, so the caller can invoke them directly without the subprocess round-trip. Result content passes through the same processing as model-turn MCP calls. Session expiry is not retried automatically; callers can mcp_reconnect and retry. UrlElicitationRequired (-32042) tries Elicitation hooks; if no hook resolves, the call errors with the URL in the message — open it out-of-band, then retry mcp_call. STAGED calls (input_files/output_files declared) additionally stage lane rows in/out around the call — see the input_files describe. Staged failures come back as a success-subtype response whose staging field carries a typed error_code; subtype:error is emitted only when the call could not be attempted at all (server not connected, kill switch, dispatch failure) and means nothing ran. Standard RPC semantics: a redelivered request_id supersedes the in-flight run (it is aborted and its response suppressed — exactly one response per request_id); conversion is idempotent, so re-running is safe. Cancellable via control_cancel_request.
  */
 declare type SDKControlMcpCallRequest = {
     subtype: 'mcp_call';
     /**
-     * Fully-qualified MCP tool name, e.g. mcp__server__tool_name.
+     * Fully-qualified MCP tool name, e.g. mcp__server__tool_name. Plugin-hosted servers are ordinary MCP servers here — e.g. mcp__plugin_documents_docs__doc_export (server names are normalized: non-[a-zA-Z0-9_-] becomes _).
      */
     tool: string;
+    /**
+     * Tool arguments. When input_files/output_files are declared, any string VALUE that exactly equals "{{in:NAME}}" or "{{out:NAME}}" (whole string, not a substring) is replaced with the worker-chosen absolute path of that named staged file before the call; a token naming no declared file fails the request with staging error_code=tool_error, and every declared output's "{{out:NAME}}" token must appear in arguments (the substituted path is the only way the tool learns where to write, so an unreferenced output fails the request before the tool runs). With no files declared — including expires_at/timeout_ms-only staged calls — passed through unchanged.
+     */
     arguments?: Record<string, unknown>;
+    /**
+     * RFC3339 deadline, REQUIRED when output_files are declared (a stale buffered drain must not overwrite rows written since). Sending expires_at routes the call through the staging engine, same as timeout_ms — the response gains a staging result. UNDELIVERED requests buffer durably and drain after reattach; a drain past this instant is dropped with staging error_code=expired instead of executing stale. Once delivered to a live worker the request is acked immediately and never redelivered — a worker killed mid-run surfaces as a missing response (apply your own deadline), not a later drain. An unparseable value is treated as already expired (fail closed).
+     */
+    expires_at?: string;
+    /**
+     * Tool-execution timeout (staging and collection have their own transport timeouts). Clamped to [1000, 600000]; default 120000. Sending timeout_ms routes the call through the staging engine — so it is always enforced when present and the response carries a staging result; omit it for a plain call. Staged calls are POSIX-worker-only: on a Windows worker any staged-field call fails with a typed staging refusal.
+     */
+    timeout_ms?: number;
+    /**
+     * Declaring input_files or output_files makes this a STAGED call: rows are fetched from the synced-file lane into a private per-request temp dir the WORKER chooses (random, per-UID — the caller never sees or computes paths; it references files via tokens in arguments), the tool runs, and declared outputs are written back as lane rows (durable-at-ack PUT). The response then carries a `staging` result the caller switches on.
+     */
+    input_files?: {
+        /**
+         * Handle referenced from arguments as "{{in:NAME}}". Unique within the request.
+         */
+        name: string;
+        /**
+         * Synced-file lane row to stage, e.g. /working/.cowork/originals/a.docx. A missing row fails with staging error_code=input_missing; the etag actually staged is echoed back in staging.inputs_used.
+         */
+        lane_path: string;
+    }[];
+    output_files?: {
+        /**
+         * Handle referenced from arguments as "{{out:NAME}}" — the tool is told (via the substituted path) where to write; the worker collects from exactly that path. Unique within the request.
+         */
+        name: string;
+        /**
+         * Synced-file lane row to write, e.g. /working/report.cd. Unique within the request (two outputs on one row would self-conflict under CAS). Outputs over the 25 MiB lane cap fail with staging error_code=output_too_large.
+         */
+        lane_path: string;
+        /**
+         * Opaque lane etag the output row must still carry for the write to land (CAS). Omitted = unconditional last-writer-wins (an empty string is rejected, not treated as unconditional). A row that moved since fails that output with staging error_code=output_conflict and the requested bytes are not written. Redelivery of a completed CAS write re-runs and conflicts with its own prior write — treat output_conflict on a retry as possible-prior-success and reconcile by etag.
+         */
+        if_match?: string;
+    }[];
 };
 
 /**
@@ -3956,7 +3994,7 @@ export declare type SDKModelRefusalFallbackMessage = {
 };
 
 /**
- * Emitted when the model ends the stream with stop_reason "refusal" and no fallback model is configured, so the turn ends as an error. The structured counterpart to detecting stop_reason "refusal" on the assistant error frame. Not emitted when a fallback existed but was declined or gate-failed (model_refusal_fallback covers the retry case). Absent from older CLIs.
+ * Emitted when the model ends the stream with stop_reason "refusal" and no retry runs: no fallback model is configured, or per-category routing declined the retry (the refusal category has no fallback map entry). The structured counterpart to detecting stop_reason "refusal" on the assistant error frame. Not emitted when the retry ran or the user declined the retry dialog (model_refusal_fallback covers the retry case). Absent from older CLIs.
  */
 export declare type SDKModelRefusalNoFallbackMessage = {
     type: 'system';
@@ -4403,6 +4441,9 @@ export declare type SDKUserMessage = {
     message: MessageParam;
     parent_tool_use_id: string | null;
     isSynthetic?: boolean;
+    /**
+     * Structured tool output — the tool's full Output object, not the string content sent to the model. The shape is per-tool, keyed by the matching tool_use block's name (see the *Output types in toolTypes); MCP and dynamic tools carry their own shapes, so the field stays unknown-typed. For the Agent/Task tool the completed shape is AgentToolCompletedOutput: the subagent's final report without the model-directed agentId/usage trailer, plus run totals — render from it instead of parsing the tool_result text.
+     */
     tool_use_result?: unknown;
     priority?: 'now' | 'next' | 'later';
     origin?: SDKMessageOrigin;
@@ -4445,6 +4486,9 @@ export declare type SDKUserMessageReplay = {
     message: MessageParam;
     parent_tool_use_id: string | null;
     isSynthetic?: boolean;
+    /**
+     * Structured tool output — the tool's full Output object, not the string content sent to the model. The shape is per-tool, keyed by the matching tool_use block's name (see the *Output types in toolTypes); MCP and dynamic tools carry their own shapes, so the field stays unknown-typed. For the Agent/Task tool the completed shape is AgentToolCompletedOutput: the subagent's final report without the model-directed agentId/usage trailer, plus run totals — render from it instead of parsing the tool_result text.
+     */
     tool_use_result?: unknown;
     priority?: 'now' | 'next' | 'later';
     origin?: SDKMessageOrigin;
@@ -6665,9 +6709,9 @@ export declare type TeammateIdleHookInput = BaseHookInput & {
 };
 
 /**
- * Why the query loop terminated. Unset when the loop was bypassed (local slash command) or interrupted externally (budget/retry limits checked between yields).
+ * Why the query loop terminated. Unset when the loop was bypassed (local slash command).
  */
-export declare type TerminalReason = 'blocking_limit' | 'rapid_refill_breaker' | 'prompt_too_long' | 'image_error' | 'model_error' | 'aborted_streaming' | 'aborted_tools' | 'stop_hook_prevented' | 'hook_stopped' | 'tool_deferred' | 'max_turns' | 'background_requested' | 'completed';
+export declare type TerminalReason = 'blocking_limit' | 'rapid_refill_breaker' | 'prompt_too_long' | 'image_error' | 'model_error' | 'api_error' | 'malformed_tool_use_exhausted' | 'aborted_streaming' | 'aborted_tools' | 'stop_hook_prevented' | 'hook_stopped' | 'tool_deferred' | 'max_turns' | 'background_requested' | 'completed' | 'budget_exhausted' | 'structured_output_retry_exhausted' | 'tool_deferred_unavailable' | 'turn_setup_failed';
 
 /**
  * Claude decides when and how much to think (Opus 4.6+).

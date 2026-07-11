@@ -97,6 +97,7 @@ export type AgentOutput =
       content: {
         type: "text";
         text: string;
+        citations?: unknown[] | null;
       }[];
       resolvedModel?: string;
       totalToolUseCount: number;
@@ -111,11 +112,14 @@ export type AgentOutput =
           web_search_requests: number;
           web_fetch_requests: number;
         } | null;
-        service_tier: ("standard" | "priority" | "batch") | null;
+        service_tier: string | null;
         cache_creation: {
           ephemeral_1h_input_tokens: number;
           ephemeral_5m_input_tokens: number;
         } | null;
+        inference_geo?: string | null;
+        speed?: string | null;
+        iterations?: unknown;
       };
       toolStats?: {
         readCount: number;
@@ -125,12 +129,16 @@ export type AgentOutput =
         linesAdded: number;
         linesRemoved: number;
         otherToolCount: number;
+        frameCount?: number;
       };
       status: "completed";
       prompt: string;
+      worktreePath?: string;
+      worktreeBranch?: string;
     }
   | {
       status: "async_launched";
+      isAsync?: true;
       /**
        * The ID of the async agent
        */
@@ -3102,7 +3110,7 @@ export interface WebFetchOutput {
   url: string;
   artifactRead?: {
     slug: string;
-    ver: string;
+    ver?: string;
   };
 }
 export interface WebSearchOutput {
@@ -3407,6 +3415,10 @@ export interface ScheduleWakeupOutput {
    * True when the model ended the loop via `stop: true`
    */
   stopped?: boolean;
+  /**
+   * How many pending dynamic-loop wakeups stop:true cancelled. 0 means nothing was pending — a recurring /loop cron is not cancelled by stop:true.
+   */
+  cancelledWakeups?: number;
 }
 export interface MonitorOutput {
   /**

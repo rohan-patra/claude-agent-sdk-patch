@@ -223,14 +223,32 @@ export type CodeSessionGitContext = {
     defaultBranch?: string;
 };
 /**
+ * Terminal 4xx from `POST /v1/code/sessions` for a recognized
+ * `session_grouping_id` rejection — retrying with the same inputs fails
+ * identically.
+ * @alpha
+ */
+export type CreateSessionFailure = {
+    terminal: true;
+    status: number;
+    detail: string | undefined;
+};
+/**
+ * Type guard for `createCodeSession` results.
+ * @alpha
+ */
+export declare function isCreateSessionFailure(r: string | CreateSessionFailure | null): r is CreateSessionFailure;
+/**
  * `POST /v1/code/sessions` — create a fresh CCR session. Returns the `cse_*`
- * session id, or null on any failure (HTTP error, malformed response).
+ * session id on success, a `CreateSessionFailure` for a recognized
+ * `session_grouping_id` rejection (terminal — don't retry), or null on any
+ * other failure (HTTP error, malformed response).
  *
  * Callers supply their own OAuth token — this is a thin HTTP wrapper with no
  * implicit auth, so it works from any process (not just the CLI).
  * @alpha
  */
-export declare function createCodeSession(baseUrl: string, accessToken: string, title: string, timeoutMs: number, tags?: string[], gitContext?: CodeSessionGitContext, cwd?: string, model?: string): Promise<string | null>;
+export declare function createCodeSession(baseUrl: string, accessToken: string, title: string, timeoutMs: number, tags?: string[], gitContext?: CodeSessionGitContext, cwd?: string, model?: string, sessionGroupingId?: string): Promise<string | CreateSessionFailure | null>;
 /**
  * `POST /v1/code/sessions/{id}/bridge` — mint a worker JWT for the session.
  * Returns credentials, a `CredentialsFailure` for terminal authz failures
