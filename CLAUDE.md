@@ -27,25 +27,47 @@ fork vendors the **npm tarball** as upstream.
 
 ## Update to a new upstream release
 
-```bash
-# 1. Vendor the latest published version onto the `upstream` branch.
-#    (Must be run from a clean working tree; returns you to your branch.)
-npm run update-upstream
+**Always try the automated script first.** From a clean `main`:
 
-# 2. Fold it into the fork, resolving any conflicts, then commit the merge.
-git checkout main
-git merge upstream
+```bash
+./scripts/update.sh                    # vendor latest, merge, re-apply patch, commit
+./scripts/update.sh --version 0.3.210  # pin a specific upstream version
 ```
 
-`npm run update-upstream` always vendors the **latest** version. To pin a
-specific version, do it by hand (same steps the script automates):
+It vendors the tarball onto `upstream`, merges into `main`, re-derives the
+`sdk.mjs` spawn-site patch from pristine upstream (backreference regexes — no
+hard-coded minified identifiers), then runs the whole review checklist as hard
+assertions (2× `="cli"`, 0× `="sdk-ts"`, 2× `delete …CLAUDE_AGENT_SDK_VERSION`,
+`node --check`, no other bundle with a spawn site, `package.json` still carries
+the script, delta limited to the expected files). On success it commits the
+merge; it does **not** push or cut a release.
+
+If **any** assertion trips — most likely because upstream restructured the
+spawn sites or reintroduced a second bundle — the script aborts the merge,
+restores the tree, and exits non-zero. That is the signal to do the update **by
+hand** (next section). The script never commits a half-applied patch, so a
+failure is safe: nothing is left in a broken state.
+
+After a successful run, push and cut the release (not automated):
 
 ```bash
+git push origin main upstream upstream-<version>
+gh release create v<version> --target main --title v<version> --notes '...'
+```
+
+### Manual fallback (when `update.sh` fails or you want to pin by hand)
+
+```bash
+# 1. Vendor a version onto the `upstream` branch (latest, or edit for a pin).
+npm run update-upstream                # always latest; or the pinned form:
 git checkout upstream
 D=$(mktemp -d); ( cd "$D" && npm pack @anthropic-ai/claude-agent-sdk@0.3.151 ); tar -xzf "$D"/*.tgz -C "$D"
 rsync -a --delete --exclude=.git "$D/package/" ./
 git add -A && git commit -m "vendor: @anthropic-ai/claude-agent-sdk@0.3.151" && git tag upstream-0.3.151
-git checkout main && git merge upstream
+
+# 2. Fold it into the fork, then re-apply the patch by hand (see below).
+git checkout main
+git merge upstream
 ```
 
 Diff any two releases with their tags: `git diff upstream-0.3.150 upstream-0.3.151`.
@@ -68,9 +90,13 @@ Only commit once that diff is exactly the intended patch and nothing more.
 
 Make changes on `main` (one focused commit each, so merges stay easy).
 
-- `package.json` → `scripts.update-upstream` is the only patch on top of a clean
-  copy of upstream `0.3.150`. Because it edits a vendored file, expect to
-  re-resolve it if upstream ever adds its own `scripts` block.
+- `package.json` → `scripts.update-upstream` is the only patch to a *vendored*
+  file besides `sdk.mjs`. Because it edits a vendored file, expect to re-resolve
+  it if upstream ever adds its own `scripts` block.
+- `scripts/update.sh` is a **main-only** file (no upstream counterpart, so it
+  never conflicts). It automates the whole update + patch re-application; see
+  "Update to a new upstream release". Keep the two `sdk.mjs` regexes in it in
+  sync with the manual procedure documented below.
 
 ### Subprocess environment normalization (`sdk.mjs`)
 
@@ -158,7 +184,9 @@ Verify after re-applying: `node --check sdk.mjs`, then confirm no
 `case"sdk-ts"` in the `bridge.mjs` telemetry switch should stay) and that there
 are two `delete …CLAUDE_AGENT_SDK_VERSION` sites in `sdk.mjs`. The final
 `git diff --stat upstream` should show only `sdk.mjs` (4 lines),
-`package.json` (~3 lines), and `CLAUDE.md` — nothing else.
+`package.json` (~3 lines), `CLAUDE.md`, and `scripts/update.sh` — nothing else.
+(`scripts/update.sh` automates exactly these two `perl` rewrites; if you touch
+the site-matching here, update its regexes too.)
 
 The package name is left as `@anthropic-ai/claude-agent-sdk` so the fork is a
 drop-in replacement. Note `optionalDependencies` pin the native
