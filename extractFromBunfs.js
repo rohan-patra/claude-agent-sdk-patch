@@ -1,4 +1,4 @@
-/* eslint-disable custom-rules/no-sync-fs */
+/* oxlint-disable custom-rules/no-sync-fs */
 // Extracts a file from Bun's $bunfs virtual filesystem to a real temp directory
 // so it can be spawned as a subprocess (child processes cannot access $bunfs).
 //
@@ -28,7 +28,7 @@ function tmpdir() {
     return process.env.CLAUDE_CODE_TMPDIR
   }
   if (process.platform === 'darwin') {
-    // eslint-disable-next-line custom-rules/no-hardcoded-tmp -- mirrors tempfile.ts: macOS /tmp works fine; os.tmpdir() below is for Android-on-Linux where /tmp isn't writable.
+    // oxlint-disable-next-line custom-rules/no-hardcoded-tmp -- mirrors tempfile.ts: macOS /tmp works fine; os.tmpdir() below is for Android-on-Linux where /tmp isn't writable.
     return '/tmp'
   }
   return osTmpdir()
