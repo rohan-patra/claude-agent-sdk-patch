@@ -150,7 +150,7 @@ export type AttachBridgeSessionOptions = {
         ok: false;
         error: string;
     } | void;
-    onSetMaxThinkingTokens?: (tokens: number | null, thinkingDisplay?: 'summarized' | 'omitted' | null) => void;
+    onSetMaxThinkingTokens?: (tokens: number | null | undefined, thinkingDisplay?: 'summarized' | 'omitted' | null) => void;
     /**
      * `set_permission_mode` from claude.ai. Return an error verdict to send
      * an error control_response (vs silently false-succeeding). Omit if
@@ -220,7 +220,27 @@ export declare function isCredentialsFailure(r: RemoteCredentials | CredentialsF
 export type CodeSessionGitContext = {
     gitRepoUrl: string;
     branch: string;
+    /**
+     * The repo's default branch, when authoritatively known. LOAD-BEARING
+     * for branch continuity: when absent, `branch` is omitted from
+     * `outcomes.branches` entirely (the classification never acts on a
+     * guess), so the remote session works on a runner-generated branch
+     * instead of `branch`, with only a debug-level signal. Callers that
+     * want the session to check out AND push to `branch` must supply
+     * this — read `git symbolic-ref refs/remotes/origin/HEAD`, or run
+     * `git remote set-head origin -a` to repair a missing symref.
+     */
     defaultBranch?: string;
+};
+/**
+ * Caller-owned dedupe state for createCodeSession's branch-drop debug
+ * signal: create one object per logical create (outside your retry
+ * loop) and pass it to every attempt so the drop logs once per
+ * decision. Omit it to log on every attempt.
+ * @alpha
+ */
+export declare type BranchDropLogDedup = {
+    lastKey?: string | null;
 };
 /**
  * Terminal 4xx from `POST /v1/code/sessions` for a recognized
@@ -248,7 +268,7 @@ export declare function isCreateSessionFailure(r: string | CreateSessionFailure 
  * implicit auth, so it works from any process (not just the CLI).
  * @alpha
  */
-export declare function createCodeSession(baseUrl: string, accessToken: string, title: string, timeoutMs: number, tags?: string[], gitContext?: CodeSessionGitContext, cwd?: string, model?: string, sessionGroupingId?: string): Promise<string | CreateSessionFailure | null>;
+export declare function createCodeSession(baseUrl: string, accessToken: string, title: string, timeoutMs: number, tags?: string[], gitContext?: CodeSessionGitContext, cwd?: string, model?: string, sessionGroupingId?: string, dropLogDedup?: BranchDropLogDedup): Promise<string | CreateSessionFailure | null>;
 /**
  * `POST /v1/code/sessions/{id}/bridge` — mint a worker JWT for the session.
  * Returns credentials, a `CredentialsFailure` for terminal authz failures
