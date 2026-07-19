@@ -197,16 +197,18 @@ export type RemoteCredentials = {
     worker_epoch: number;
 };
 /**
- * Terminal authz failure from `POST /bridge` — retrying with the same inputs
- * is guaranteed to fail. Returned for 403 with `error.resource` set to
- * `"untrusted_device"` (token missing/revoked — enroll) or
- * `"session_stale_relogin"` (OAuth session older than the freshness window —
- * re-authenticate).
+ * Terminal failure from `fetchRemoteCredentials` — retrying with the same
+ * inputs is guaranteed to fail. Server-minted reasons arrive as 403 with
+ * `error.resource` set to `"untrusted_device"` (token missing/revoked —
+ * enroll) or `"session_stale_relogin"` (OAuth session older than the
+ * freshness window — re-authenticate). `"invalid_session_id"` is
+ * client-minted: the session id failed validation (`/^[a-zA-Z0-9_-]+$/`)
+ * before any request was sent.
  * @alpha
  */
 export type CredentialsFailure = {
     terminal: true;
-    reason: 'untrusted_device' | 'session_stale_relogin';
+    reason: 'untrusted_device' | 'session_stale_relogin' | 'invalid_session_id';
 };
 /**
  * Type guard for `fetchRemoteCredentials` results.

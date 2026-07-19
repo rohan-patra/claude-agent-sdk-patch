@@ -20,6 +20,7 @@ export type ToolInputSchemas =
   | GrepInput
   | TaskStopInput
   | ListMcpResourcesInput
+  | RefreshMcpToolsInput
   | McpInput
   | NotebookEditInput
   | ReadMcpResourceDirInput
@@ -29,6 +30,7 @@ export type ToolInputSchemas =
   | WebFetchInput
   | WebSearchInput
   | AskUserQuestionInput
+  | SendFeedbackInput
   | ClaudeDesignInput
   | ProjectsInput
   | EnterPlanModeInput
@@ -45,6 +47,7 @@ export type ToolInputSchemas =
   | RemoteTriggerInput
   | ShowOnboardingRolePickerInput
   | MonitorInput
+  | ProposeSkillsInput
   | ArtifactInput
   | PushNotificationInput
   | EnterWorktreeInput
@@ -61,6 +64,7 @@ export type ToolOutputSchemas =
   | GrepOutput
   | TaskStopOutput
   | ListMcpResourcesOutput
+  | RefreshMcpToolsOutput
   | McpOutput
   | NotebookEditOutput
   | ReadMcpResourceDirOutput
@@ -70,6 +74,7 @@ export type ToolOutputSchemas =
   | WebFetchOutput
   | WebSearchOutput
   | AskUserQuestionOutput
+  | SendFeedbackOutput
   | EnterWorktreeOutput
   | ExitWorktreeOutput
   | TaskCreateOutput
@@ -81,6 +86,7 @@ export type ToolOutputSchemas =
   | ShowOnboardingRolePickerOutput
   | ScheduleWakeupOutput
   | MonitorOutput
+  | ProposeSkillsOutput
   | EnterPlanModeOutput
   | REPLOutput
   | WorkflowOutput
@@ -100,6 +106,7 @@ export type AgentOutput =
         citations?: unknown[] | null;
       }[];
       resolvedModel?: string;
+      modelsUsed?: string[];
       totalToolUseCount: number;
       totalDurationMs: number;
       totalTokens: number;
@@ -148,9 +155,13 @@ export type AgentOutput =
        */
       description: string;
       /**
-       * Model the spawn resolved (may differ from the requested one)
+       * Model in use at the backgrounding transition (a pre-background swap is reflected here)
        */
       resolvedModel?: string;
+      /**
+       * Ordered distinct models used before backgrounding (length > 1 means a mid-run swap)
+       */
+      modelsUsed?: string[];
       /**
        * The prompt for the agent
        */
@@ -341,6 +352,32 @@ export type ListMcpResourcesOutput = {
    */
   server: string;
 }[];
+export type RefreshMcpToolsOutput = {
+  /**
+   * Server name
+   */
+  server: string;
+  /**
+   * refreshed: tool list re-queried and applied. error: the re-query failed and the previous tool set was kept. not_connected: the server has no live connection to query (this tool never dials).
+   */
+  status: "refreshed" | "error" | "not_connected";
+  /**
+   * Number of tools now available from this server
+   */
+  toolCount?: number;
+  /**
+   * Tool names this refresh added
+   */
+  added?: string[];
+  /**
+   * Tool names this refresh removed
+   */
+  removed?: string[];
+  /**
+   * Why the refresh failed or the server was unavailable
+   */
+  error?: string;
+}[];
 /**
  * MCP tool execution result
  */
@@ -375,8 +412,10 @@ export type ArtifactOutput =
         title: string;
         url: string;
         updatedAt?: string;
+        rel?: "mine" | "shared";
       }[];
       truncated?: boolean;
+      scope?: "shared" | "all";
     };
 export type ProjectsOutput =
   | {
@@ -471,7 +510,7 @@ export interface AgentInput {
    */
   team_name?: string;
   /**
-   * Permission mode for spawned teammate (e.g., "plan" to require plan approval).
+   * Deprecated; ignored. Subagents inherit the parent session's permission mode; agent-definition frontmatter may override it.
    */
   mode?: "acceptEdits" | "auto" | "bypassPermissions" | "default" | "dontAsk" | "plan" | "bubble";
   /**
@@ -675,6 +714,12 @@ export interface ListMcpResourcesInput {
    */
   server?: string;
 }
+export interface RefreshMcpToolsInput {
+  /**
+   * Optional server name: refresh only this server. Omit to refresh all connected servers.
+   */
+  server?: string;
+}
 export interface McpInput {
   [k: string]: unknown;
 }
@@ -743,6 +788,10 @@ export interface ReportFindingsInput {
      * One-sentence statement of the defect
      */
     summary: string;
+    /**
+     * Compressed label for compact UI (≤60 chars): the claim alone, no rationale or consequence clause
+     */
+    short_summary?: string;
     /**
      * Concrete inputs/state → wrong output/crash
      */
@@ -2372,6 +2421,24 @@ export interface AskUserQuestionInput {
     source?: string;
   };
 }
+export interface SendFeedbackInput {
+  /**
+   * What kind of feedback this is.
+   */
+  type: "bug" | "idea" | "missing_capability";
+  /**
+   * Short, specific one-line summary of the issue.
+   */
+  title: string;
+  /**
+   * Factual, reproducible report: what was attempted, what happened, exact error text if short, repro steps. No speculation, no secrets.
+   */
+  details: string;
+  /**
+   * Optional short tag naming the part of Claude Code this is about (e.g. "hooks config", "/help", "file editing"). Leave blank if unclear.
+   */
+  area?: string;
+}
 export interface ClaudeDesignInput {
   /**
    * Claude Design action to perform. Call with "list" first to discover the available operations and their argument schemas.
@@ -2607,13 +2674,164 @@ export interface MonitorInput {
     protocols?: string[];
   };
 }
+export interface ProposeSkillsInput {
+  /**
+   * @minItems 1
+   * @maxItems 3
+   */
+  proposals:
+    | [
+        {
+          /**
+           * kebab-case skill slug
+           */
+          name: string;
+          kind: "new" | "improvement";
+          /**
+           * Existing skill name to amend. Required when kind is 'improvement'; omit for 'new'.
+           */
+          target?: string;
+          /**
+           * one line shown on the card
+           */
+          description: string;
+          /**
+           * memory file paths where this procedure was observed
+           */
+          evidence?: string[];
+          /**
+           * complete SKILL.md draft (frontmatter + Trigger/Steps/Verification body)
+           */
+          skillMd: string;
+        }
+      ]
+    | [
+        {
+          /**
+           * kebab-case skill slug
+           */
+          name: string;
+          kind: "new" | "improvement";
+          /**
+           * Existing skill name to amend. Required when kind is 'improvement'; omit for 'new'.
+           */
+          target?: string;
+          /**
+           * one line shown on the card
+           */
+          description: string;
+          /**
+           * memory file paths where this procedure was observed
+           */
+          evidence?: string[];
+          /**
+           * complete SKILL.md draft (frontmatter + Trigger/Steps/Verification body)
+           */
+          skillMd: string;
+        },
+        {
+          /**
+           * kebab-case skill slug
+           */
+          name: string;
+          kind: "new" | "improvement";
+          /**
+           * Existing skill name to amend. Required when kind is 'improvement'; omit for 'new'.
+           */
+          target?: string;
+          /**
+           * one line shown on the card
+           */
+          description: string;
+          /**
+           * memory file paths where this procedure was observed
+           */
+          evidence?: string[];
+          /**
+           * complete SKILL.md draft (frontmatter + Trigger/Steps/Verification body)
+           */
+          skillMd: string;
+        }
+      ]
+    | [
+        {
+          /**
+           * kebab-case skill slug
+           */
+          name: string;
+          kind: "new" | "improvement";
+          /**
+           * Existing skill name to amend. Required when kind is 'improvement'; omit for 'new'.
+           */
+          target?: string;
+          /**
+           * one line shown on the card
+           */
+          description: string;
+          /**
+           * memory file paths where this procedure was observed
+           */
+          evidence?: string[];
+          /**
+           * complete SKILL.md draft (frontmatter + Trigger/Steps/Verification body)
+           */
+          skillMd: string;
+        },
+        {
+          /**
+           * kebab-case skill slug
+           */
+          name: string;
+          kind: "new" | "improvement";
+          /**
+           * Existing skill name to amend. Required when kind is 'improvement'; omit for 'new'.
+           */
+          target?: string;
+          /**
+           * one line shown on the card
+           */
+          description: string;
+          /**
+           * memory file paths where this procedure was observed
+           */
+          evidence?: string[];
+          /**
+           * complete SKILL.md draft (frontmatter + Trigger/Steps/Verification body)
+           */
+          skillMd: string;
+        },
+        {
+          /**
+           * kebab-case skill slug
+           */
+          name: string;
+          kind: "new" | "improvement";
+          /**
+           * Existing skill name to amend. Required when kind is 'improvement'; omit for 'new'.
+           */
+          target?: string;
+          /**
+           * one line shown on the card
+           */
+          description: string;
+          /**
+           * memory file paths where this procedure was observed
+           */
+          evidence?: string[];
+          /**
+           * complete SKILL.md draft (frontmatter + Trigger/Steps/Verification body)
+           */
+          skillMd: string;
+        }
+      ];
+}
 export interface ArtifactInput {
   /**
-   * Omit (or 'publish') to publish file_path. 'list' enumerates the user's published artifacts; only `limit` may accompany it.
+   * Omit (or 'publish') to publish file_path. 'list' enumerates artifacts — the user's own by default, see `scope`; only `limit` and `scope` may accompany it.
    */
   action?: "publish" | "list";
   /**
-   * Path to an .html or .md file to render. Required to publish (the default action). Use a short, distinctive basename — it is the fallback title if the HTML has no <title>.
+   * Path to an .html or .md file to render. Required to publish (the default action). Use a short, distinctive basename — it is the last-resort title when the HTML has no <title> and no `title` parameter is given.
    */
   file_path?: string;
   /**
@@ -2624,6 +2842,14 @@ export interface ArtifactInput {
    * list only: maximum artifacts to return (default 25).
    */
   limit?: number;
+  /**
+   * list only: 'mine' (default) lists artifacts the user owns — the only ones the update flow can target; 'shared' lists artifacts other people shared with the user (read-only); 'all' lists both. Rows are labeled (mine)/(shared) whenever scope is not 'mine'.
+   */
+  scope?: "mine" | "shared" | "all";
+  /**
+   * Title for the artifact — the name shown in the browser tab and gallery. Prefer a <title> tag in the HTML itself; this parameter fills in only when the file lacks one and never overrides the tag. HTML publishes only — Markdown pages keep their filename identity. Content always comes from file_path — there is no inline content parameter.
+   */
+  title?: string;
   /**
    * One-sentence subtitle shown on the gallery card. Say what the page is or does.
    */
@@ -2637,7 +2863,7 @@ export interface ArtifactInput {
    */
   url?: string;
   /**
-   * Overwrite without a conflict check. Use only after a 409 when you have reconciled with the other session's version and intend to replace it. Omit (or false) to send baseVersion so a concurrent write 409s instead of being silently clobbered.
+   * Overwrite without a conflict check. Use only after a 409 when you have reconciled with the other session's version and intend to replace it. The tracked baseVersion is always sent; with force:true the server treats it as informational and overwrites. Omit (or false) so a concurrent write 409s instead of being silently clobbered.
    */
   force?: boolean;
 }
@@ -2697,6 +2923,14 @@ export interface BashOutput {
    * True if the user manually backgrounded the command with Ctrl+B
    */
   backgroundedByUser?: boolean;
+  /**
+   * Set when the command hit its timeout and was auto-backgrounded; the timeout value in ms
+   */
+  timedOutAfterMs?: number;
+  /**
+   * Model-facing note that the session cwd was not changed by a backgrounded command containing a directory-change builtin (cd/pushd/popd/chdir)
+   */
+  backgroundCwdHint?: string;
   /**
    * Flag to indicate if sandbox mode was overridden
    */
@@ -2913,6 +3147,7 @@ export interface GrepOutput {
   numLines?: number;
   numMatches?: number;
   totalFiles?: number;
+  totalLines?: number;
   appliedLimit?: number;
   appliedOffset?: number;
 }
@@ -3048,6 +3283,10 @@ export interface ReportFindingsOutput {
      * One-sentence statement of the defect
      */
     summary: string;
+    /**
+     * Compressed label for compact UI (≤60 chars): the claim alone, no rationale or consequence clause
+     */
+    short_summary?: string;
     /**
      * Concrete inputs/state → wrong output/crash
      */
@@ -3340,6 +3579,10 @@ export interface AskUserQuestionOutput {
    */
   afkTimeoutMs?: number;
 }
+export interface SendFeedbackOutput {
+  success: boolean;
+  message: string;
+}
 export interface EnterWorktreeOutput {
   worktreePath: string;
   worktreeBranch?: string;
@@ -3434,6 +3677,12 @@ export interface MonitorOutput {
    * No timeout — runs until TaskStop or session end.
    */
   persistent?: boolean;
+}
+export interface ProposeSkillsOutput {
+  /**
+   * Number of proposals shown on the review card
+   */
+  proposalCount: number;
 }
 export interface EnterPlanModeOutput {
   /**
