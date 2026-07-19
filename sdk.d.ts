@@ -29,7 +29,7 @@ export declare type AccountInfo = {
     /**
      * Active API backend. Anthropic OAuth login only applies when "firstParty"; for 3P providers the other fields are absent and auth is external (AWS creds, gcloud ADC, etc.). "gateway" means the CLI is authenticated against an enterprise gateway.
      */
-    apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'anthropicAws' | 'mantle' | 'gateway';
+    apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'anthropicAws' | 'anthropicGoogleCloud' | 'mantle' | 'gateway';
 };
 
 /**
@@ -251,6 +251,18 @@ export declare type CanUseTool = (toolName: string, input: Record<string, unknow
      * must echo this value for the worker to match it.
      */
     requestId: string;
+    /**
+     * Set when a user-configured ask RULE (permissions.ask) forced this
+     * prompt while the ask carries the tool's own decisionReason. Hosts
+     * making policy on the reason (e.g. auto-deny a safetyCheck) or
+     * running host-side auto-approval should treat asks carrying this
+     * field as rule-forced: the user's stated intent is a human prompt.
+     */
+    matchedAskRule?: {
+        source: string;
+        toolName: string;
+        ruleContent?: string;
+    };
 }) => Promise<PermissionResult | null>;
 
 export declare type ConfigChangeHookInput = BaseHookInput & {
@@ -1463,7 +1475,7 @@ export declare type Options = {
      * Enable beta features. Currently supported:
      * - `'context-1m-2025-08-07'` - Enable 1M token context window (Sonnet 4/4.5 only)
      *
-     * @see https://docs.anthropic.com/en/api/beta-headers
+     * @see https://platform.claude.com/docs/en/api/beta-headers
      */
     betas?: SdkBeta[];
     /**
@@ -1607,7 +1619,7 @@ export declare type Options = {
      *
      * When set, takes precedence over the deprecated `maxThinkingTokens`.
      *
-     * @see https://docs.anthropic.com/en/docs/build-with-claude/adaptive-thinking
+     * @see https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
      */
     thinking?: ThinkingConfig;
     /**
@@ -1620,7 +1632,7 @@ export declare type Options = {
      * - `'xhigh'` — Deeper than high (Fable 5, Opus 4.7+, Sonnet 5)
      * - `'max'` — Maximum effort (Fable 5, Opus 4.6+, Sonnet 4.6+)
      *
-     * @see https://docs.anthropic.com/en/docs/build-with-claude/effort
+     * @see https://platform.claude.com/docs/en/build-with-claude/effort
      */
     effort?: EffortLevel;
     /**
@@ -1813,7 +1825,7 @@ export declare type Options = {
      * }
      * ```
      *
-     * @see https://docs.anthropic.com/en/docs/claude-code/settings#sandbox-settings
+     * @see https://code.claude.com/docs/en/settings#sandbox-settings
      */
     sandbox?: SandboxSettings;
     /**
@@ -2013,6 +2025,15 @@ export declare type Options = {
      */
     spawnClaudeCodeProcess?: (options: SpawnOptions) => SpawnedProcess;
 };
+
+/**
+ * Emitted on the same severity:'error' path as the usage-limit bucket, but
+ * the condition is an org policy, not an exhausted limit — consumers route
+ * these to org-disabled presentation, never the usage-limit card.
+ *
+ * @alpha
+ */
+export declare const ORG_POLICY_LIMIT_PREFIXES: readonly ["This service is disabled for your org"];
 
 export declare type OutputFormat = JsonSchemaOutputFormat;
 
@@ -2317,9 +2338,13 @@ export declare interface Query extends AsyncGenerator<SDKMessage, void> {
      *
      * @param settings - A partial settings object to merge into the flag settings.
      * Each top-level key also accepts `null` to clear it from the flag layer.
+     * `effortLevel` additionally accepts `'max'`, which is session-scoped: it
+     * applies for the rest of the session on models that support it and is
+     * never persisted to settings files (the persisted
+     * {@link Settings.effortLevel} excludes it for that reason).
      */
     applyFlagSettings(settings: {
-        [K in keyof Settings]?: Settings[K] | null;
+        [K in keyof Settings]?: K extends 'effortLevel' ? EffortLevel | null : Settings[K] | null;
     }): Promise<void>;
     /**
      * Get the full initialization result, including supported commands, models,
@@ -2483,9 +2508,16 @@ export declare interface Query extends AsyncGenerator<SDKMessage, void> {
      * are managed by the CLI subprocess.
      *
      * Note: This only affects servers added dynamically via this method or the SDK.
-     * Servers configured via settings files are not affected.
+     * Servers configured via settings files are not affected. Servers introduced
+     * by plugins are also exempt: they are managed by the plugin system, so
+     * omitting them from the payload does NOT remove them — they keep running
+     * (unless enterprise policy denies the server) and are simply absent from
+     * the result's `removed` list. In particular, `setMcpServers({})` no longer
+     * guarantees a session has zero dynamic MCP surface when plugins are
+     * loaded. Naming a plugin server explicitly in the payload still replaces
+     * it (ownership is preserved CLI-side).
      *
-     * @param servers - Record of server name to configuration. Pass an empty object to remove all dynamic servers.
+     * @param servers - Record of server name to configuration. Pass an empty object to remove all dynamic servers (except plugin-owned ones, which are retained).
      * @returns Information about which servers were added, removed, and any connection errors
      */
     setMcpServers(servers: Record<string, McpServerConfig>): Promise<McpSetServersResult>;
@@ -2793,9 +2825,17 @@ export declare type SDKAssistantMessage = {
     session_id: string;
     request_id?: string;
     /**
+     * This turn continued the preceding truncated assistant turn inside its trailing signed thinking block (max-output-tokens recovery). Its thinking signatures are cumulative over that preceding thinking-only turn, so a history replayed through the bridge must carry this flag back for the normalizer to keep the run's prefix on the wire. Wrapper-level sibling — never inside `message.content` — so it is not replayed to the model.
+     */
+    resumed_from_incomplete_thinking?: true;
+    /**
      * Wire uuids of previously-delivered messages that this message replaces (refusal-fallback supersede). The list can include tombstoned tool_result frames from the refused leg, not only assistant frames. Evict the named messages on arrival and treat this frame as their canonical replacement. Idempotent with the end-of-turn model_refusal_fallback notice, whose retracted_message_uuids remains the complete audit record for the turn.
      */
     supersedes?: UUID[];
+    /**
+     * True when this assistant message was truncated by an interrupt/abort before the stream completed: stop_reason was never received and the content may end mid-word. Absent on normally completed messages.
+     */
+    aborted?: true;
     /**
      * Subagent type that produced this message.
      */
@@ -2805,7 +2845,10 @@ export declare type SDKAssistantMessage = {
      */
     task_description?: string;
 
-
+    /**
+     * ISO timestamp of when this content block finished on the originating process. One API assistant turn may produce several assistant messages sharing a message.id, each with its own timestamp. Uses the originating host's clock, so it's for display only; do not order messages by this field. Older emitters omit it; consumers should fall back to receive time.
+     */
+    timestamp?: string;
 
 
 
@@ -3414,7 +3457,7 @@ declare type SDKControlListModelsRequest = {
 };
 
 /**
- * Invokes an MCP tool via the subprocess MCP client without a model turn. No permission check (control channel is trusted, same as other subtypes). SDK-type MCP servers (config.type === "sdk") are rejected — they are caller-provided, so the caller can invoke them directly without the subprocess round-trip. Result content passes through the same processing as model-turn MCP calls. Session expiry is not retried automatically; callers can mcp_reconnect and retry. UrlElicitationRequired (-32042) tries Elicitation hooks; if no hook resolves, the call errors with the URL in the message — open it out-of-band, then retry mcp_call. STAGED calls (input_files/output_files declared) additionally stage lane rows in/out around the call — see the input_files describe. Staged failures come back as a success-subtype response whose staging field carries a typed error_code; subtype:error is emitted only when the call could not be attempted at all (server not connected, kill switch, dispatch failure) and means nothing ran. Standard RPC semantics: a redelivered request_id supersedes the in-flight run (it is aborted and its response suppressed — exactly one response per request_id); conversion is idempotent, so re-running is safe. Cancellable via control_cancel_request.
+ * Invokes an MCP tool via the subprocess MCP client without a model turn. No permission check (control channel is trusted, same as other subtypes). SDK-type MCP servers (config.type === "sdk") are rejected — they are caller-provided, so the caller can invoke them directly without the subprocess round-trip. Result content passes through the same processing as model-turn MCP calls. Session expiry is not retried automatically; callers can mcp_reconnect and retry. UrlElicitationRequired (-32042) tries Elicitation hooks; if no hook resolves, the call errors with the URL in the message — open it out-of-band, then retry mcp_call. STAGED calls (input_files/output_files declared) additionally stage lane rows in/out around the call — see the input_files describe. Staged failures come back as a success-subtype response whose staging field carries a typed error_code; subtype:error is emitted only when the call could not be attempted at all (server not connected, kill switch, dispatch failure) and means nothing ran. A target server that is not yet connected is brought up on demand: dispatch runs the deferred plugin/MCP startup resolution (the work a first model turn would have done) and waits up to 30s — shortened by expires_at when that is sooner — for the server to connect before answering "MCP server not connected", so a dispatch that races plugin startup (e.g. after an idle-wake reattach) succeeds instead of failing until a turn runs. Standard RPC semantics: a redelivered request_id supersedes the in-flight run (it is aborted and its response suppressed — exactly one response per request_id); conversion is idempotent, so re-running is safe. Cancellable via control_cancel_request.
  */
 declare type SDKControlMcpCallRequest = {
     subtype: 'mcp_call';
@@ -3513,22 +3556,37 @@ declare type SDKControlPermissionRequest = {
     input: Record<string, unknown>;
     permission_suggestions?: coreTypes.PermissionUpdate[];
     blocked_path?: string;
+    /**
+     * Human-readable reason the ask escalated, for the consent line of the host's dialog. For decision_reason_type "subcommandResults" (compound bash), this is the NESTED safety check's warning text — the wrapper itself has no text — preferring a check that requires manual approval (classifier_approvable false); treat it with the same display/policy care as a "safetyCheck" reason. May carry ANSI escapes; sanitize before rendering.
+     */
     decision_reason?: string;
     /**
-     * Structured discriminator for why auto-mode escalated. Lets SDK hosts make policy (e.g. auto-deny safetyCheck) without parsing decision_reason text. For compound bash commands this is "subcommandResults" even when a safetyCheck is nested inside — check classifier_approvable for that case.
+     * Structured discriminator for why auto-mode escalated. Lets SDK hosts make policy (e.g. auto-deny safetyCheck) without parsing decision_reason text. For compound bash commands this is "subcommandResults" even when a safetyCheck is nested inside — check classifier_approvable for that case, and see decision_reason: for this variant it carries the nested safety check's warning text.
      */
     decision_reason_type?: 'rule' | 'mode' | 'subcommandResults' | 'permissionPromptTool' | 'hook' | 'asyncAgent' | 'sandboxOverride' | 'workingDir' | 'safetyCheck' | 'classifier' | 'other';
     /**
      * Set when a safetyCheck is present anywhere in the decision reason (including nested inside subcommandResults for compound bash). false = at least one safety check requires manual approval (e.g. Windows path bypass, dangerous rm); true = all safety checks MAY be classifier-approved (e.g. sensitive-file paths). Absent when no safetyCheck is involved.
      */
     classifier_approvable?: boolean;
+    /**
+     * True when the dialog must not offer the persistent "don't ask again" row for this ask: accepting it would write a whole-tool allow rule broader than the ask's own verb (PermissionAskDecision.suppressAlwaysAllowRule). Hosts rendering approve options should omit any persistent-rule affordance when set.
+     */
+    suppress_always_allow_rule?: boolean;
+    /**
+     * Set when a user-configured ask RULE (permissions.ask) forced this prompt but the ask carries the tool's own decision_reason — the ask-rule substitution keeps the richer tool-minted ask, so the rule rides here instead of decision_reason_type 'rule'. Hosts making policy on decision_reason_type (e.g. auto-deny safetyCheck) or running host-side auto-approval should treat asks carrying this field as rule-forced: the user's stated intent is a human prompt. Values are producer-authored but render-unsafe like decision_reason; sanitize before display.
+     */
+    matched_ask_rule?: {
+        source: string;
+        tool_name: string;
+        rule_content?: string;
+    };
     title?: string;
     display_name?: string;
     tool_use_id: string;
     agent_id?: string;
     description?: string;
     /**
-     * True when the tool's approval card IS the user-interaction surface (Tool.requiresUserInteraction()). SDK hosts must not offer one-tap Approve/Deny for these — the user has to open the session and respond on the card itself.
+     * True when one-tap Approve/Deny must not be offered: the tool's approval card IS the user-interaction surface (Tool.requiresUserInteraction() — the user responds on the card itself), OR the pending ask is localDisplayOnly (its consent disclosure cannot ride this wire and only the local dialog renders it). Either way the user has to open the session to answer.
      */
     requires_user_interaction?: boolean;
 };
@@ -3587,6 +3645,10 @@ export declare type SDKControlReloadPluginsResponse = {
         name: string;
         path: string;
         source?: string;
+        /**
+         * The plugin's version as declared in its plugin.json manifest, emitted verbatim (plugin-author-controlled — validate before trusting). Omitted when the manifest declares no version.
+         */
+        version?: string;
     }[];
     mcpServers: coreTypes.McpServerStatus[];
     error_count: number;
@@ -3703,6 +3765,7 @@ declare type SDKControlSetMaxThinkingTokensRequest = {
 declare type SDKControlSetModelRequest = {
     subtype: 'set_model';
     model?: string;
+
 };
 
 /**
@@ -3909,7 +3972,7 @@ export declare type SDKMemoryRecallMessage = {
 export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKControlRequestProgressMessage | SDKModelRefusalFallbackMessage | SDKModelRefusalNoFallbackMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKPluginInstallMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskUpdatedMessage | SDKTaskProgressMessage | SDKBackgroundTasksChangedMessage | SDKThinkingTokensMessage | SDKSessionStateChangedMessage | SDKWorkerShuttingDownMessage | SDKCommandsChangedMessage | SDKNotificationMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKMemoryRecallMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPermissionDeniedMessage | SDKPromptSuggestionMessage | SDKMirrorErrorMessage | SDKInformationalMessage | SDKConversationResetMessage;
 
 /**
- * Provenance of a user-role message (peer session, team lead, channel). Absent or `human` means keyboard input from the user.
+ * Provenance of a user-role message (peer session, team lead, channel). A host wrapping keyboard input must stamp {kind:'human'} explicitly — absent origin is treated as unattributed and fails closed at strict isHuman() trust gates.
  */
 export declare type SDKMessageOrigin = {
     kind: 'human';
@@ -3934,6 +3997,10 @@ export declare type SDKMessageOrigin = {
     body?: string;
 } | {
     kind: 'task-notification';
+    /**
+     * Present when the delivery is the fired stored prompt of a scheduled task/routine (stamped from server-asserted provenance; the schedule attests storage, not authorship). The harness frames it as the session's assigned task instead of the generic background-notification frame. Absent on webhook, PR-steward, plugin, and background-event deliveries.
+     */
+    subkind?: 'scheduled-trigger';
 } | {
     kind: 'coordinator';
 } | {
@@ -4307,6 +4374,10 @@ export declare type SDKSystemMessage = {
         name: string;
         path: string;
 
+        /**
+         * The plugin's version as declared in its plugin.json manifest, emitted verbatim (plugin-author-controlled — validate before trusting). Omitted when the manifest declares no version.
+         */
+        version?: string;
     }[];
 
 
@@ -4426,6 +4497,16 @@ export declare type SDKToolProgressMessage = {
     task_id?: string;
     uuid: UUID;
     session_id: string;
+    heartbeat?: boolean;
+    subagent_type?: string;
+    subagent_retry?: {
+        agent_id: string;
+        attempt: number;
+        max_retries: number;
+        retry_delay_ms: number;
+        error_status: number | null;
+        error_category: string;
+    };
 };
 
 export declare type SDKToolUseSummaryMessage = {
@@ -4614,7 +4695,7 @@ export declare type SessionMutationOptions = {
 
 export declare type SessionStartHookInput = BaseHookInput & {
     hook_event_name: 'SessionStart';
-    source: 'startup' | 'resume' | 'clear' | 'compact';
+    source: 'startup' | 'resume' | 'clear' | 'compact' | 'fork';
     agent_type?: string;
     model?: string;
     session_title?: string;
@@ -4816,6 +4897,10 @@ export declare interface Settings {
      * Command to refresh GCP authentication (e.g., gcloud auth application-default login)
      */
     gcpAuthRefresh?: string;
+    /**
+     * Corporate launcher argv prefix for the background-agent supervisor, the sessions and workers it hosts, and the other covered background processes listed in the Claude Code corporate-launcher documentation. Equivalent to the CLAUDE_CODE_PROCESS_WRAPPER environment variable, which takes precedence when set. Honored from managed settings, a --settings/SDK-supplied settings file, and user settings, in that precedence order; project and local settings are ignored.
+     */
+    processWrapper?: string;
     /**
      * Executable that computes managed settings at startup. Honored only from admin-controlled policy sources.
      */
@@ -6116,6 +6201,10 @@ export declare interface Settings {
      */
     feedbackSurveyRate?: number;
     /**
+     * Model-drafted feedback (the SendFeedback tool). "notify" (default) shows a one-line notice when a draft is queued; "quiet" shows only the footer counter; "off" disables the tool entirely so drafts are never queued.
+     */
+    feedbackDrafts?: 'notify' | 'quiet' | 'off';
+    /**
      * Whether to show tips in the spinner
      */
     spinnerTipsEnabled?: boolean;
@@ -6495,6 +6584,12 @@ export declare interface SpawnedProcess {
     /** Exit code if the process has exited, null otherwise */
     readonly exitCode: number | null;
     /**
+     * Signal that terminated the process, if any. Optional: ChildProcess
+     * provides it; custom spawners may omit it (signal exits then read as
+     * still-running until their 'exit' event delivers the signal).
+     */
+    readonly signalCode?: NodeJS.Signals | null;
+    /**
      * Kill the process with the given signal
      * @param signal - The signal to send (e.g., 'SIGTERM', 'SIGKILL')
      */
@@ -6503,6 +6598,11 @@ export declare interface SpawnedProcess {
      * Register a callback for when the process exits
      * @param event - Must be 'exit'
      * @param listener - Callback receiving exit code and signal
+     *
+     * ProcessTransport's built-in local spawn delivers this only after the
+     * child's stderr has also closed (bounded by a short grace), so exit
+     * consumers see a complete stderr tail in exit errors. Custom
+     * `spawnClaudeCodeProcess` implementations emit plain process exit.
      */
     on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
     /**
@@ -6828,6 +6928,33 @@ export declare interface Transport {
 }
 
 /**
+ * Messages meaning "a usage limit was genuinely reached" — the error-path
+ * outputs of getLimitReachedText (rateLimitMessages.ts) and
+ * getFableCreditsRequiredContent (api/errors.ts).
+ *
+ * @alpha
+ */
+export declare const USAGE_LIMIT_ERROR_PREFIXES: readonly ["You've hit your", "You've reached your", "You're out of usage credits", "Your org is out of usage · add funds to continue", "Your org is out of usage · contact your admin", "Your seat type doesn't include usage credits", "Your seat type doesn't include usage", "Your usage allocation has been disabled by your admin", "Your group's usage limit is set to $0", "Fable 5 requires usage credits", "You're out of extra usage", "Your seat type doesn't include extra usage"];
+
+/**
+ * Overage-transition notifications ("now drawing from credits"). Toast only;
+ * these never arrive as API errors.
+ *
+ * @alpha
+ */
+export declare const USAGE_TRANSITION_PREFIXES: readonly ["You're now using usage credits", "You're now using your usage allocation", "Now using your usage allocation", "Now using usage credits", "You're now using extra usage", "Now using extra usage"];
+
+/**
+ * Approaching-limit warnings (severity:'warning'). Footer/toast only; these
+ * never arrive as API errors. ("Approaching …" early warnings are
+ * deliberately unregistered — they render in the footer without
+ * <RateLimitMessage> styling; see the generator-coverage tests.)
+ *
+ * @alpha
+ */
+export declare const USAGE_WARNING_PREFIXES: readonly ["You've used", "You're close to"];
+
+/**
  * A `request_user_dialog` control request from the CLI, asking the SDK
  * consumer to render a blocking dialog and return the user's choice.
  * Each `dialogKind` defines its own payload and result shape; the protocol
@@ -6877,6 +7004,10 @@ export declare type UserPromptExpansionHookSpecificOutput = {
 export declare type UserPromptSubmitHookInput = BaseHookInput & {
     hook_event_name: 'UserPromptSubmit';
     prompt: string;
+    /**
+     * Who authored/injected the prompt: `user` = submitted from the interactive composer, `sdk` = non-interactive entrypoint (`-p` / Agent SDK), `loop_wakeup` = dynamic /loop wakeup, `schedule_wakeup` = scheduled-task fire (CronCreate/routine), `system` = other machine-injected turns (peer/channel messages, task notifications, auto-continuation). Currently only set for Anthropic-internal sessions while the field is trialed; external payloads omit it.
+     */
+    source?: 'user' | 'sdk' | 'system' | 'loop_wakeup' | 'schedule_wakeup';
     session_title?: string;
 };
 
