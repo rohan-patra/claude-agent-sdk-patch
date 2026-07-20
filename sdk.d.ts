@@ -2669,6 +2669,10 @@ export declare type RewindFilesResult = {
     filesChanged?: string[];
     insertions?: number;
     deletions?: number;
+    /**
+     * Count of tracked files NOT restored or deleted because a symlink, hard link, or other non-regular file was detected at the tracked path, its parent directory no longer resolves to where it pointed when the checkpoint was taken, or its backup could not be safely read. Only populated by a real (non-dryRun) rewind — on a dryRun response the field is never set and the preview counts do not reflect link-safety refusals. Absent or 0 on a real rewind means no link-safety refusals occurred; other per-file failures (for example a missing backup file) are logged and reported in telemetry but are not counted here.
+     */
+    skippedLinks?: number;
 };
 
 export declare type SandboxCredentialsConfig = NonNullable<z.infer<ReturnType<typeof SandboxCredentialsConfigSchema>>>;
@@ -2700,6 +2704,7 @@ declare const SandboxFilesystemConfigSchema: () => z.ZodOptional<z.ZodObject<{
     denyRead: z.ZodOptional<z.ZodArray<z.ZodString>>;
     allowRead: z.ZodOptional<z.ZodArray<z.ZodString>>;
     allowManagedReadPathsOnly: z.ZodOptional<z.ZodBoolean>;
+    disabled: z.ZodOptional<z.ZodBoolean>;
 }, z.core.$strip>>;
 
 export declare type SandboxIgnoreViolations = NonNullable<SandboxSettings['ignoreViolations']>;
@@ -2756,6 +2761,7 @@ declare const SandboxSettingsSchema: () => z.ZodObject<{
         denyRead: z.ZodOptional<z.ZodArray<z.ZodString>>;
         allowRead: z.ZodOptional<z.ZodArray<z.ZodString>>;
         allowManagedReadPathsOnly: z.ZodOptional<z.ZodBoolean>;
+        disabled: z.ZodOptional<z.ZodBoolean>;
     }, z.core.$strip>>;
     credentials: z.ZodOptional<z.ZodObject<{
         files: z.ZodOptional<z.ZodArray<z.ZodObject<{
@@ -2895,7 +2901,7 @@ export declare type SDKBackgroundTasksChangedMessage = {
 export declare type SdkBeta = 'context-1m-2025-08-07';
 
 /**
- * Fire-and-forget push of the full slash-command list after a mid-session change (e.g. skills discovered dynamically as the agent works in a subdirectory). Clients should REPLACE their cached command list with this payload: supportedCommands() is captured once at initialize and never reflects mid-session changes, so a client re-fetch would return the stale init list.
+ * Fire-and-forget push of the full slash-command list after a mid-session change (e.g. skills discovered dynamically as the agent works in a subdirectory). Clients should REPLACE their cached command list with this payload; supportedCommands() tracks the latest push, so a re-fetch returns the same fresh list.
  */
 export declare type SDKCommandsChangedMessage = {
     type: 'system';
@@ -3394,7 +3400,7 @@ declare type SDKControlInitializeRequest = {
      */
     title?: string;
     /**
-     * When provided, only skills whose names match an entry are loaded into the main session system prompt, using the same rules as AgentDefinition.skills: exact name, plugin-qualified name, or ":name" suffix. Omit to load every discovered skill. Applies to the main session only; subagents use AgentDefinition.skills.
+     * When provided, only skills whose names match an entry are loaded into the main session system prompt, matching the exact canonical name (e.g. "my-plugin:my-skill") or a ":name" suffix of it. Display names and aliases do not match. Omit to load every discovered skill. Applies to the main session only; subagents use AgentDefinition.skills, which additionally resolves display names and aliases.
      */
     skills?: string[];
 
@@ -3764,7 +3770,10 @@ declare type SDKControlSetMaxThinkingTokensRequest = {
  */
 declare type SDKControlSetModelRequest = {
     subtype: 'set_model';
-    model?: string;
+    /**
+     * Model to switch to. Omitted, null, or 'default' resets to the session default model.
+     */
+    model?: string | null;
 
 };
 
@@ -3986,6 +3995,10 @@ export declare type SDKMessageOrigin = {
      * Sender display name, normalized by the harness: Unicode control, format, surrogate, and line/paragraph-separator code points stripped (categories Cc/Cf/Cs/Zl/Zp — covers bidi controls, zero-width characters, and tag characters), trimmed, at most 64 code points (+ ellipsis, never splitting a surrogate pair). Sender-asserted display text (the addressable identity is `from`) — render it as reported speech, but no client-side character sanitization is needed. Absent when the wire is not exactly one harness-formed envelope and on messages from older senders.
      */
     name?: string;
+    /**
+     * The sender's host-openable session id (the envelope's `from-session` attribute — e.g. a desktop `local_<uuid>` or a CCR `session_`/`ses_` id), set by the sender's host so a receiving UI can link this message back to the sending session. Sender-asserted like `from`: a navigation target only, never authority. Absent when the sender's host provides none and on messages from older senders.
+     */
+    fromSession?: string;
 
     /**
      * Task id of the in-process background subagent that sent this message, stamped by the harness from the sending loop (never from tool input). Absent for cross-session peers.
@@ -3995,6 +4008,10 @@ export declare type SDKMessageOrigin = {
      * Decoded message body with the peer envelope stripped — byte-exact with what the model sees. Present only when the turn is exactly one harness-formed envelope (or an in-process agent message); render this instead of re-parsing the message text.
      */
     body?: string;
+    /**
+     * Kernel-verified pid of the process that connected to this session's cross-session messaging socket, read from the connection (SO_PEERCRED / LOCAL_PEERPID) — never from the payload. This identifies the CONNECTING process, which for relayed traffic (e.g. a daemon forwarding on another session's behalf) is the relay, not the message's author. Key sender identity on this, never on `from`: `from` is sender-authored and kept only for reply routing, so it is forgeable by any same-user process. Absent when unverifiable (Windows, non-UDS ingress) — never a wrong value. Pids are recyclable: provenance, not an authentication token.
+     */
+    verifiedPeerPid?: number;
 } | {
     kind: 'task-notification';
     /**
@@ -4240,6 +4257,8 @@ export declare type SDKResultSuccess = {
     ttft_ms?: number;
     ttft_stream_ms?: number;
     time_to_request_ms?: number;
+    user_message_uuid?: string;
+    request_sent_wall_ms?: number;
     time_to_request_from_spawn_ms?: number;
     warm_spare_claimed?: boolean;
     time_origin_ms?: number;
@@ -4274,7 +4293,7 @@ export declare type SDKSessionInfo = {
      */
     summary: string;
     /**
-     * Last modified time in milliseconds since epoch.
+     * Last modified time in integer milliseconds since epoch.
      */
     lastModified: number;
     /**
@@ -4302,7 +4321,7 @@ export declare type SDKSessionInfo = {
      */
     tag?: string;
     /**
-     * Creation time in milliseconds since epoch, extracted from the first entry's timestamp.
+     * Creation time in integer milliseconds since epoch, extracted from the first entry's timestamp.
      */
     createdAt?: number;
 };
@@ -4551,6 +4570,7 @@ export declare type SDKUserMessage = {
 
 
 
+
     uuid?: UUID;
     session_id?: string;
     /**
@@ -4584,6 +4604,7 @@ export declare type SDKUserMessageReplay = {
      * ISO timestamp when the message was created on the originating process. Older emitters omit it; consumers should fall back to receive time.
      */
     timestamp?: string;
+
 
 
 
@@ -4764,7 +4785,8 @@ export declare type SessionStore = {
     load(key: SessionKey): Promise<SessionStoreEntry[] | null>;
     /**
      * List sessions for a projectKey. Returns IDs + modification times.
-     * `mtime` is Unix epoch milliseconds; adapters without native modification
+     * `mtime` is integer Unix epoch milliseconds (floor fractional sources);
+     * adapters without native modification
      * time (e.g. Redis) must maintain their own index. Result order is
      * unspecified — the SDK sorts by mtime descending.
      * Optional — if undefined, listSessions() with a sessionStore throws.
@@ -6129,6 +6151,10 @@ export declare interface Settings {
              * When true (set in managed settings), only allowRead paths from policySettings are used.
              */
             allowManagedReadPathsOnly?: boolean;
+            /**
+             * macOS and Linux/WSL only: skip filesystem isolation entirely while keeping network and seccomp isolation. Ignored on native Windows, where the sandboxed process runs as a separate user with no inherent rights, so skipping the filesystem rules would withhold every access grant rather than loosen them — filesystem isolation stays on there. Sandboxed commands get unrestricted read/write access to the host filesystem; network egress is still confined to network.allowedDomains. Intended for deployments whose goal is egress control rather than filesystem containment. Does not change Bash prompting: sandbox.autoAllowBashIfSandboxed is independent and still defaults to true, so set it to false to keep prompting for sandboxed commands. Drops the read protection from filesystem.denyRead and credentials.files for sandboxed commands, since both are enforced by the filesystem layer this turns off; credentials.envVars deny/mask is unaffected. Only honored from user, managed/policy, or CLI (`--settings`) settings — project settings (.claude/settings.json and .claude/settings.local.json) are ignored. If managed settings configure sandbox.filesystem at all, or list any sandbox.credentials.files entry, only managed settings can set this: an admin who deployed filesystem restrictions must not have them switched off by a user-writable file. (sandbox.credentials.envVars does not pin it — env scrubbing is independent of the filesystem layer and survives this setting.) When unset, filesystem isolation stays on.
+             */
+            disabled?: boolean;
         };
         credentials?: {
             /**

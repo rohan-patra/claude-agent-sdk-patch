@@ -406,6 +406,7 @@ export type ArtifactOutput =
       warnings?: string[];
       contract?: string;
       updated?: boolean;
+      liveSubscription?: string;
     }
   | {
       artifacts: {
